@@ -1,17 +1,21 @@
-# Multimodal_mixed_strata_model
+# ata_model
 
 # A Deep Multimodal Fusion Model for Real-Time Identification of Mixed Strata in Shield Tunnelling
 
-This repository provides the code, processed numerical data, LOF-cleaned tunnelling-parameter data, and representative sample raw vibration data for demonstrating the preprocessing workflow of the manuscript:
+This repository provides the implementation code, processed numerical input data, LOF-cleaned tunnelling-parameter data, representative sample raw vibration data, and scripts used for the manuscript:
 
 **A deep multimodal fusion model for real-time identification of mixed strata in shield tunnelling**
+
+The complete processed spectrogram image dataset used as the image-modality input of the multimodal model is available on Zenodo:
+
+https://doi.org/10.5281/zenodo.20645879
 
 ## 1. Overview
 
 This study proposes a deep multimodal fusion model for real-time identification of mixed strata in shield tunnelling. The model uses two types of inputs:
 
 * **Numerical input**: LOF-cleaned tunnelling parameters and vibration RMS features.
-* **Image input**: frequency-domain spectrograms generated from three-dimensional vibration signals.
+* **Image input**: processed frequency-domain spectrogram images generated from three-dimensional vibration signals.
 
 The numerical branch is based on an MLP, and the image branch is based on CNNs. The extracted features are concatenated for final stratum classification.
 
@@ -109,11 +113,27 @@ The numerical input columns include:
 地层分类
 ```
 
+### 3.3 Processed Spectrogram Image Dataset
+
+The complete processed spectrogram image dataset used as the image-modality input of the multimodal model is deposited on Zenodo:
+
+```text
+https://doi.org/10.5281/zenodo.20645879
+```
+
+The Zenodo dataset contains three compressed files corresponding to the three stratum types:
+
+```text
+11.zip = HSS: Homogeneous Stratum
+22.zip = DMS: Dual-layer Mixed Stratum
+33.zip = TMS: Triple-layer Mixed Stratum
+```
+
+These spectrogram images are the processed image input data used by the multimodal fusion model.
+
 ## 4. Raw Vibration Data and Spectrogram Generation
 
-Due to the large file size of the complete raw three-dimensional vibration dataset and the generated spectrogram image dataset, they are not fully included in this GitHub repository. In addition, the original monitoring data are associated with an engineering project and therefore require data management and anonymization.
-
-To support reproducibility, this repository provides processed numerical input data, LOF-cleaned tunnelling-parameter data, representative sample raw vibration files, and the spectrogram generation script. The sample raw vibration files can be used to demonstrate the conversion process from raw vibration signals to frequency-domain spectrogram images.
+The complete raw three-dimensional vibration dataset is not fully included in this GitHub repository because of its large file size and engineering data management requirements. Instead, this repository provides representative sample raw vibration files to demonstrate the preprocessing workflow from raw vibration signals to frequency-domain spectrogram images.
 
 Each sample `.mat` file contains several variables. In the spectrogram generation script:
 
@@ -174,7 +194,7 @@ python Data_cleaning_LOF.py
 
 This script performs LOF-based cleaning for tunnelling parameters and outputs cleaned data and comparison figures.
 
-### 5.3 Generate Spectrogram Images
+### 5.3 Generate Spectrogram Images from Sample Raw Vibration Data
 
 ```bash
 python Spectrogram_generation.py
@@ -198,7 +218,13 @@ python Multimodal_model_main_program.py
 
 This script includes model training, validation, testing, and ablation analysis.
 
-Please note that full model training requires the complete spectrogram image dataset aligned with `tunnelling_parameter_1.xlsx`. Since the complete image dataset is too large to be uploaded to this repository, the provided sample `.mat` and `.zip` files are mainly used to demonstrate the spectrogram generation procedure.
+Please note that full model training requires the processed spectrogram image dataset aligned with `tunnelling_parameter_1.xlsx`. The complete processed spectrogram image dataset is available on Zenodo:
+
+```text
+https://doi.org/10.5281/zenodo.20645879
+```
+
+The representative `.mat` and `.zip` files in this GitHub repository are mainly used to demonstrate the raw vibration data structure and the spectrogram generation procedure.
 
 ## 6. Reproducibility Workflow
 
@@ -212,20 +238,38 @@ The main data-processing workflow is:
 5. Delete the vibration samples corresponding to removed zero-value tunnelling-parameter records.
 6. Combine the LOF-cleaned tunnelling parameters and vibration RMS features to form the numerical input.
 7. Generate vertical, horizontal, and axial spectrograms from raw vibration data.
-8. Synchronize the numerical and image inputs.
-9. Train and evaluate the multimodal fusion model.
+8. Use the processed spectrogram image dataset deposited on Zenodo as the image-modality input.
+9. Synchronize the numerical and image inputs.
+10. Train and evaluate the multimodal fusion model.
 ```
 
 ## 7. Data Availability
 
-The complete raw vibration dataset and the complete generated spectrogram image dataset are not fully uploaded because of their large file size and engineering data management requirements.
+The code, processed numerical input data, LOF-cleaned tunnelling-parameter data, and representative sample raw vibration data are available in this GitHub repository.
 
-Sensitive engineering information has been removed or anonymized, including exact project location, exact chainage, original ring numbers, detailed construction logs, and project-identifiable information.
+The complete processed spectrogram image dataset used as the image-modality input of the multimodal model is available on Zenodo:
+
+```text
+https://doi.org/10.5281/zenodo.20645879
+```
+
+The complete processed spectrogram image dataset is deposited on Zenodo rather than directly included in this GitHub repository because of its large file size and the file-size limitations of GitHub. Zenodo is used as the long-term public data repository for the large-size processed image dataset.
+
+The complete raw three-dimensional vibration dataset is not fully uploaded because of its large file size and engineering data management requirements. Representative raw vibration files are provided in this GitHub repository to demonstrate the data structure and the spectrogram generation workflow.
+
+To remove project-identifiable information, the provided raw vibration samples were anonymized and self-numbered. The numbering rule preserves the correspondence among the randomly selected sample group, stratum type, and vibration direction, while excluding sensitive engineering information such as exact project location, exact chainage, original ring numbers, detailed construction logs, and project-identifiable information.
 
 The released files are provided for academic research and reproducibility purposes.
 
+
 ## 8. Citation
 
-If you use this repository or the provided code, please cite the corresponding manuscript:
+If you use this repository, the provided code, or the dataset, please cite the corresponding manuscript and the Zenodo dataset:
 
 **A deep multimodal fusion model for real-time identification of mixed strata in shield tunnelling**
+
+Processed spectrogram image dataset:
+
+```text
+https://doi.org/10.5281/zenodo.20645879
+```

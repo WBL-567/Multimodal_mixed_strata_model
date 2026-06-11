@@ -1,10 +1,6 @@
-# ata_model
+# Multimodal_mixed_strata_model
 
-# A Deep Multimodal Fusion Model for Real-Time Identification of Mixed Strata in Shield Tunnelling
-
-This repository provides the implementation code, processed numerical input data, LOF-cleaned tunnelling-parameter data, representative sample raw vibration data, and scripts used for the manuscript:
-
-**A deep multimodal fusion model for real-time identification of mixed strata in shield tunnelling**
+This repository provides the implementation code, processed numerical input data, LOF-cleaned tunnelling-parameter data, representative sample raw vibration data, and preprocessing scripts used for multimodal mixed strata identification in shield tunnelling.
 
 The complete processed spectrogram image dataset used as the image-modality input of the multimodal model is available on Zenodo:
 
@@ -12,7 +8,7 @@ https://doi.org/10.5281/zenodo.20645879
 
 ## 1. Overview
 
-This study proposes a deep multimodal fusion model for real-time identification of mixed strata in shield tunnelling. The model uses two types of inputs:
+This repository contains code and data for a deep multimodal fusion model for real-time identification of mixed strata in shield tunnelling. The model uses two types of inputs:
 
 * **Numerical input**: LOF-cleaned tunnelling parameters and vibration RMS features.
 * **Image input**: processed frequency-domain spectrogram images generated from three-dimensional vibration signals.
@@ -178,6 +174,8 @@ For example:
 
 represent one randomly selected group of raw vibration signals from stratum type 1, including vertical, horizontal, and axial directions.
 
+The provided raw vibration samples were anonymized and self-numbered to remove project-identifiable information while preserving the correspondence among sample group, stratum type, and vibration direction.
+
 ## 5. How to Run
 
 ### 5.1 Install Dependencies
@@ -261,12 +259,9 @@ To remove project-identifiable information, the provided raw vibration samples w
 
 The released files are provided for academic research and reproducibility purposes.
 
-
 ## 8. Citation
 
-If you use this repository, the provided code, or the dataset, please cite the corresponding manuscript and the Zenodo dataset:
-
-**A deep multimodal fusion model for real-time identification of mixed strata in shield tunnelling**
+If you use this repository, the provided code, or the dataset, please cite the corresponding manuscript and the Zenodo dataset.
 
 Processed spectrogram image dataset:
 

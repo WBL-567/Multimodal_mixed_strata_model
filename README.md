@@ -1,7 +1,8 @@
 # Multimodal_mixed_strata_model
+
 # A Deep Multimodal Fusion Model for Real-Time Identification of Mixed Strata in Shield Tunnelling
 
-This repository provides the code, processed numerical data, LOF-cleaned tunnelling-parameter data, and representative sample raw vibration data used for the manuscript:
+This repository provides the code, processed numerical data, LOF-cleaned tunnelling-parameter data, and representative sample raw vibration data for demonstrating the preprocessing workflow of the manuscript:
 
 **A deep multimodal fusion model for real-time identification of mixed strata in shield tunnelling**
 
@@ -123,6 +124,8 @@ a3 = vibration acceleration sequence
 
 The time interval of `a2` is approximately 0.000390625 s, corresponding to a sampling frequency of 2560 Hz.
 
+Some representative raw vibration files are provided directly in `.mat` format, while others are compressed as `.zip` files due to file-size limitations. Please unzip the `.zip` files before running `Spectrogram_generation.py`. After decompression, the `.mat` files should be placed in the same working directory as the spectrogram generation script or in the directory specified by the user.
+
 The sample raw vibration files are named as:
 
 ```text
@@ -195,7 +198,7 @@ python Multimodal_model_main_program.py
 
 This script includes model training, validation, testing, and ablation analysis.
 
-Please note that full model training requires the complete spectrogram image dataset aligned with `tunnelling_parameter_1.xlsx`. Since the complete image dataset is too large to be uploaded to this repository, the provided sample `.mat` files are mainly used to demonstrate the spectrogram generation procedure.
+Please note that full model training requires the complete spectrogram image dataset aligned with `tunnelling_parameter_1.xlsx`. Since the complete image dataset is too large to be uploaded to this repository, the provided sample `.mat` and `.zip` files are mainly used to demonstrate the spectrogram generation procedure.
 
 ## 6. Reproducibility Workflow
 

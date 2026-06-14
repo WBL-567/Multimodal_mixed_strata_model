@@ -453,213 +453,10 @@ def save_confusion_matrix(matrix, class_names, save_path):
         print(f"混淆矩阵已保存为 SVG: {base}.svg")
     plt.close()
 
-# ===================== 消融实验与重要性分析 =====================
-def evaluate_modalities(model, loader, device, enable_param: bool, enable_image: bool):
-    prev_param = model.enable_param
-    prev_image = model.enable_image
-    model.enable_param = enable_param
-    model.enable_image = enable_image
-
-    criterion = nn.CrossEntropyLoss()
-    _, acc, _, _, _ = evaluate(model, loader, criterion, device)
-
-    model.enable_param = prev_param
-    model.enable_image = prev_image
-    return acc
-
-def cross_modality_ablation(model, test_loader, device):
-    results = {
-        'both_modalities': evaluate_modalities(model, test_loader, device, True, True),
-        'params_only': evaluate_modalities(model, test_loader, device, True, False),
-        'images_only': evaluate_modalities(model, test_loader, device, False, True),
-    }
-    print("\n跨模态消融实验结果：")
-    for k, v in results.items():
-        print(f"{k}: {v:.2f}%")
-    return results
-
-def enhanced_feature_importance(model, params_test, labels_test, test_idx, image_dirs, device, scaler=None):
-    # 重要性分析统一使用 eval_transform（带 Normalize）
-    eval_transform = build_eval_transform()
-
-    criterion = nn.CrossEntropyLoss()
-
-    # 参数敏感性分析：只启用参数模态，关闭图像模态
-    model.enable_param = True
-    model.enable_image = False
-
-    # 基线数据集：原始参数 + 标准预处理
-    base_dataset = TunnellingDataset(params_test, labels_test, test_idx, image_dirs, eval_transform)
-    base_loader = DataLoader(base_dataset, batch_size=32, shuffle=False, num_workers=0)
-    _, base_acc, _, _, _ = evaluate(model, base_loader, criterion, device)
-
-    print(f"参数模态基线准确率: {base_acc:.4f}%")
-
-    sensitivity_scores = []
-
-    for j in range(params_test.shape[1]):
-        # 打乱第 j 个特征
-        params_shuffled = params_test.copy()
-        np.random.shuffle(params_shuffled[:, j])
-
-        # 打乱后的数据集使用相同的预处理
-        dataset = TunnellingDataset(params_shuffled, labels_test, test_idx, image_dirs, eval_transform)
-        loader = DataLoader(dataset, batch_size=32, shuffle=False, num_workers=0)
-        _, acc, _, _, _ = evaluate(model, loader, criterion, device)
-
-        # 取绝对变化量，保证敏感性得分为非负值
-        sensitivity_score = abs(base_acc - acc)
-
-        sensitivity_scores.append(sensitivity_score)
-
-        print(
-            f"特征 {FEATURE_COLS[j]} 打乱后准确率: {acc:.4f}%, "
-            f"敏感性得分: {sensitivity_score:.4f}"
-        )
-
-    # 恢复完整多模态状态
-    model.enable_param = True
-    model.enable_image = True
-
-    return sensitivity_scores
-
-@torch.no_grad()
-def calculate_image_importance_accurate(model, test_loader, device):
-    criterion = nn.CrossEntropyLoss()
-    base_loss, base_acc, _, _, _ = evaluate(model, test_loader, criterion, device)
-
-    importance = []
-    for img_zero_idx in range(3):
-        model.eval()
-        running_correct = 0
-        total = 0
-        for params, img1, img2, img3, labels in test_loader:
-            params = params.to(device)
-            img1 = img1.to(device)
-            img2 = img2.to(device)
-            img3 = img3.to(device)
-            labels = labels.to(device)
-
-            imgs = [img1, img2, img3]
-            imgs[img_zero_idx] = torch.zeros_like(imgs[img_zero_idx])
-
-            outputs = model(params, imgs[0], imgs[1], imgs[2])
-            _, predicted = outputs.max(1)
-            total += labels.size(0)
-            running_correct += predicted.eq(labels).sum().item()
-
-        acc = 100. * running_correct / total
-        drop = base_acc - acc
-        importance.append(drop)
-        print(f"第 {img_zero_idx+1} 张图像置零后，精度下降: {drop:.4f}")
-
-    return importance
-
-def sensitivity_analysis_pipeline(model, params_test, labels_test, test_idx, image_dirs, test_loader, device):
-    print("\n==================== 开始敏感性分析 ====================")
-
-    feature_importance = enhanced_feature_importance(
-        model, params_test, labels_test, test_idx, image_dirs, device
-    )
-    fi_df = pd.DataFrame({
-        'feature': FEATURE_COLS,
-        'importance_drop_acc': feature_importance
-    })
-    save_dataframe_multi(fi_df, os.path.join(RESULTS_DIR, 'feature_importance_final'))
-
-    ablation_results = cross_modality_ablation(model, test_loader, device)
-    ab_df = pd.DataFrame([
-        {'modality': k, 'accuracy': v} for k, v in ablation_results.items()
-    ])
-    save_dataframe_multi(ab_df, os.path.join(RESULTS_DIR, 'modality_ablation_results'))
-    plot_and_save_bar(
-        values=[ablation_results['both_modalities'], ablation_results['params_only'], ablation_results['images_only']],
-        labels=['Both', 'Params', 'Images'],
-        title='Cross-modality Ablation',
-        ylabel='Accuracy (%)',
-        base_path_no_ext=os.path.join(RESULTS_DIR, 'modality_ablation_results')
-    )
-
-    model.enable_param = True
-    model.enable_image = True
-    importance_with_param = calculate_image_importance_accurate(model, test_loader, device)
-    total_importance = sum(importance_with_param) if sum(importance_with_param) > 0 else 1e-12
-    importance_with_param_pct = [v / total_importance * 100 for v in importance_with_param]
-    img_df_with = pd.DataFrame({
-        'image_channel': IMAGE_SUBDIRS,
-        'importance_drop_acc': importance_with_param,
-        'importance_percent': importance_with_param_pct
-    })
-    save_dataframe_multi(img_df_with, os.path.join(RESULTS_DIR, 'image_channel_importance_with_param'))
-    plot_and_save_bar(
-        values=importance_with_param_pct,
-        labels=IMAGE_SUBDIRS,
-        title='Image Channel Importance (with params)',
-        ylabel='Contribution (%)',
-        base_path_no_ext=os.path.join(RESULTS_DIR, 'image_channel_importance_with_param')
-    )
-
-    model.enable_param = False
-    model.enable_image = True
-    importance_without_param = calculate_image_importance_accurate(model, test_loader, device)
-    total_importance2 = sum(importance_without_param) if sum(importance_without_param) > 0 else 1e-12
-    importance_without_param_pct = [v / total_importance2 * 100 for v in importance_without_param]
-    img_df_without = pd.DataFrame({
-        'image_channel': IMAGE_SUBDIRS,
-        'importance_drop_acc': importance_without_param,
-        'importance_percent': importance_without_param_pct
-    })
-    save_dataframe_multi(img_df_without, os.path.join(RESULTS_DIR, 'image_channel_importance_without_param'))
-    plot_and_save_bar(
-        values=importance_without_param_pct,
-        labels=IMAGE_SUBDIRS,
-        title='Image Channel Importance (images only)',
-        ylabel='Contribution (%)',
-        base_path_no_ext=os.path.join(RESULTS_DIR, 'image_channel_importance_without_param')
-    )
-
-    model.enable_param = True
-    model.enable_image = True
-
-    print("==================== 敏感性分析完成 ====================\n")
-    return {
-        'feature_importance': feature_importance,
-        'ablation_results': ablation_results,
-        'image_importance_with_param': importance_with_param_pct,
-        'image_importance_without_param': importance_without_param_pct,
-    }
-
-# ===================== 集成预测函数 =====================
-def ensemble_predict(model_paths, test_loader, device, num_classes):
-    """集成多个折的最佳模型，对测试集进行概率平均"""
-    all_true = []
-    for params, img1, img2, img3, labels in test_loader:
-        all_true.extend(labels.numpy())
-
-    total_samples = len(test_loader.dataset)
-    cumulative_probs = torch.zeros((total_samples, num_classes))
-
-    for path in model_paths:
-        model = MultimodalModel(param_input_size=len(FEATURE_COLS), num_classes=num_classes).to(device)
-        model.load_state_dict(torch.load(path, map_location=device))
-        model.eval()
-        start_idx = 0
-        with torch.no_grad():
-            for params, img1, img2, img3, labels in test_loader:
-                batch_size = labels.size(0)
-                params = params.to(device)
-                img1 = img1.to(device)
-                img2 = img2.to(device)
-                img3 = img3.to(device)
-                outputs = model(params, img1, img2, img3)
-                probs = torch.softmax(outputs, dim=1).cpu()
-                cumulative_probs[start_idx:start_idx + batch_size] += probs
-                start_idx += batch_size
-        print(f"已集成模型: {os.path.basename(path)}")
-
-    avg_probs = cumulative_probs / len(model_paths)
-    all_pred = avg_probs.argmax(dim=1).numpy()
-    return all_true, all_pred, avg_probs
+# ===================== 第五章结果分析说明 =====================
+# 第五章中的模型性能评价、跨模态消融、方向频谱图贡献和数值特征敏感性分析
+# 已拆分到独立脚本 Chapter5_results_analysis.py 中执行。
+# 本主程序仅保留数据读取、时间块训练、最终模型训练和模型/标准化器保存流程。
 
 # ===================== 主流程 =====================
 def main():
@@ -731,9 +528,8 @@ def main():
     # ---------- 连续时间块交叉验证 ----------
     K_FOLDS = 10
     valid_folds = range(1, K_FOLDS - 1)
-    all_fold_acc = []
-    fold_summaries = []
-    ensemble_model_paths = []  # 收集每折最佳模型路径
+    # 第五章结果评价已拆分至 Chapter5_results_analysis.py。
+    # 此处仅训练并保存每折最佳模型，供独立结果分析脚本调用。
 
     for fold in valid_folds:
         print("\n" + "="*50)
@@ -853,95 +649,11 @@ def main():
         logger.plot_curves(curve_png)
         logger.save_history_to_excel(os.path.join(RESULTS_DIR, f'learning_curve_fold{fold}.xlsx'))
 
-        # 加载最佳模型在测试集上评估
-        model.load_state_dict(torch.load(best_model_path, map_location=device))
-        test_loss, test_acc, matrix, all_true, all_pred = evaluate(model, test_loader, criterion, device)
-        all_fold_acc.append(test_acc)
+        print(f"第 {fold} 折训练完成，最佳模型已保存: {best_model_path}")
+        print(f"第 {fold} 折最佳验证损失: {best_val_loss:.4f}, 最佳验证准确率: {best_val_acc:.2f}%, 最佳 epoch: {best_epoch}")
 
-        print(f"第 {fold} 折测试准确率: {test_acc:.2f}%")
-        print("分类报告:")
-        report_text = classification_report(all_true, all_pred, target_names=CLASS_NAMES, zero_division=0)
-        print(report_text)
-
-        save_text(report_text, os.path.join(RESULTS_DIR, f'classification_report_fold{fold}.txt'))
-        report_df = classification_report_to_dataframe(all_true, all_pred, CLASS_NAMES)
-        save_dataframe_multi(report_df, os.path.join(RESULTS_DIR, f'classification_report_fold{fold}'))
-        save_prediction_details(all_true, all_pred, test_idx, CLASS_NAMES,
-                                os.path.join(RESULTS_DIR, f'predictions_fold{fold}'))
-        cm_path = os.path.join(RESULTS_DIR, f'confusion_matrix_fold{fold}.png')
-        save_confusion_matrix(matrix, CLASS_NAMES, cm_path)
-        save_confusion_matrix_table(matrix, CLASS_NAMES,
-                                    os.path.join(RESULTS_DIR, f'confusion_matrix_fold{fold}'))
-
-        report_dict = classification_report(all_true, all_pred, target_names=CLASS_NAMES, output_dict=True, zero_division=0)
-        fold_summary = {
-            'fold': fold,
-            'best_epoch': best_epoch,
-            'best_val_acc': best_val_acc,
-            'best_val_loss': best_val_loss,
-            'test_acc': test_acc,
-            'test_loss': test_loss,
-            'train_size': len(train_idx),
-            'val_size': len(val_idx),
-            'test_size': len(test_idx),
-            'unused_size': unused_count,
-            'train_dist': str(dict(Counter(labels_train))),
-            'val_dist': str(dict(Counter(labels_val))),
-            'test_dist': str(dict(Counter(labels_test))),
-            'macro_f1': report_dict['macro avg']['f1-score'],
-            'weighted_f1': report_dict['weighted avg']['f1-score'],
-        }
-        for cname in CLASS_NAMES:
-            fold_summary[f'{cname}_precision'] = report_dict[cname]['precision']
-            fold_summary[f'{cname}_recall'] = report_dict[cname]['recall']
-            fold_summary[f'{cname}_f1'] = report_dict[cname]['f1-score']
-        fold_summaries.append(fold_summary)
-
-        # 保存该折模型路径用于集成
-        ensemble_model_paths.append(best_model_path)
-
-    # ---------- K折汇总 ----------
-    print("\n==================== K折交叉验证结果汇总 ====================")
-    for i, acc in enumerate(all_fold_acc, start=1):
-        print(f"Fold {i}: {acc:.2f}%")
-    print(f"平均测试准确率: {np.mean(all_fold_acc):.2f}% ± {np.std(all_fold_acc):.2f}%")
-
-    plt.figure(figsize=(8, 4))
-    x = list(range(1, len(all_fold_acc)+1))
-    plt.plot(x, all_fold_acc, marker='o')
-    plt.xticks(x)
-    plt.xlabel('Fold')
-    plt.ylabel('Test Accuracy (%)')
-    plt.title('Accuracy across Folds')
-    plt.grid(True)
-    acc_curve_png = os.path.join(RESULTS_DIR, 'fold_accuracies.png')
-    plt.tight_layout()
-    plt.savefig(acc_curve_png, dpi=200)
-    print(f"各折准确率曲线已保存为 PNG: {acc_curve_png}")
-    base, _ = os.path.splitext(acc_curve_png)
-    try:
-        plt.savefig(base + '.emf', format='emf')
-        print(f"各折准确率曲线已保存为 EMF: {base}.emf")
-    except Exception as e:
-        print(f"无法保存 EMF 格式 (将保存为 SVG): {e}")
-        plt.savefig(base + '.svg', format='svg')
-        print(f"各折准确率曲线已保存为 SVG: {base}.svg")
-    plt.close()
-
-    fold_df = pd.DataFrame(fold_summaries)
-    overall_summary_df = pd.DataFrame([{
-        'mean_test_acc': np.mean(all_fold_acc),
-        'std_test_acc': np.std(all_fold_acc),
-        'num_folds': len(all_fold_acc)
-    }])
-
-    kfold_xlsx = os.path.join(RESULTS_DIR, 'kfold_results.xlsx')
-    with pd.ExcelWriter(kfold_xlsx) as writer:
-        fold_df.to_excel(writer, index=False, sheet_name='fold_metrics')
-        overall_summary_df.to_excel(writer, index=False, sheet_name='overall_summary')
-    print(f"K折汇总结果已保存为 Excel: {kfold_xlsx}")
-    fold_df.to_csv(os.path.join(RESULTS_DIR, 'kfold_fold_metrics.csv'), index=False, encoding='utf-8-sig')
-    overall_summary_df.to_csv(os.path.join(RESULTS_DIR, 'kfold_overall_summary.csv'), index=False, encoding='utf-8-sig')
+    # ---------- K折结果评价已拆分 ----------
+    print("\nK折训练完成。K折测试评价与第五章结果输出请运行 Chapter5_results_analysis.py。")
 
     # ---------- 最终模型训练（使用全部数据） ----------
     print("\n" + "=" * 50)
@@ -1068,86 +780,10 @@ def main():
     joblib.dump(final_scaler, SCALER_PATH)
     print(f"最终标准化器已保存: {SCALER_PATH}")
 
-    final_model.load_state_dict(torch.load(MODEL_SAVE_PATH, map_location=device))
+    print(f"最终模型已保存: {MODEL_SAVE_PATH}")
+    print("最终模型训练完成。验证集、独立测试集、消融分析和敏感性分析请运行 Chapter5_results_analysis.py。")
 
-    # ---------- 最终模型在验证集和测试集上的评估 ----------
-    print("\n=== 最终模型在验证集上的评估 ===")
-    val_loss, val_acc, val_matrix, val_true, val_pred = evaluate(final_model, val_loader_final, criterion_final, device)
-    print(f"验证集准确率: {val_acc:.2f}%")
-    val_report_text = classification_report(val_true, val_pred, target_names=CLASS_NAMES, zero_division=0)
-    print("验证集分类报告:")
-    print(val_report_text)
-    save_text(val_report_text, os.path.join(RESULTS_DIR, 'classification_report_final_val.txt'))
-    save_dataframe_multi(classification_report_to_dataframe(val_true, val_pred, CLASS_NAMES),
-                         os.path.join(RESULTS_DIR, 'classification_report_final_val'))
-    save_prediction_details(val_true, val_pred, val_indices_final, CLASS_NAMES,
-                            os.path.join(RESULTS_DIR, 'predictions_final_val'))
-    save_confusion_matrix(val_matrix, CLASS_NAMES, os.path.join(RESULTS_DIR, 'confusion_matrix_final_val.png'))
-    save_confusion_matrix_table(val_matrix, CLASS_NAMES,
-                                os.path.join(RESULTS_DIR, 'confusion_matrix_final_val'))
-
-    print("\n=== 最终模型在独立测试集上的评估 ===")
-    test_loss_final, test_acc_final, test_matrix_final, test_true_final, test_pred_final = evaluate(
-        final_model, test_loader_final, criterion_final, device
-    )
-    print(f"独立测试集准确率: {test_acc_final:.2f}%")
-    test_report_text = classification_report(test_true_final, test_pred_final, target_names=CLASS_NAMES, zero_division=0)
-    print("独立测试集分类报告:")
-    print(test_report_text)
-    save_text(test_report_text, os.path.join(RESULTS_DIR, 'classification_report_final_test.txt'))
-    save_dataframe_multi(classification_report_to_dataframe(test_true_final, test_pred_final, CLASS_NAMES),
-                         os.path.join(RESULTS_DIR, 'classification_report_final_test'))
-    save_prediction_details(test_true_final, test_pred_final, test_indices_final, CLASS_NAMES,
-                            os.path.join(RESULTS_DIR, 'predictions_final_test'))
-    save_confusion_matrix(test_matrix_final, CLASS_NAMES, os.path.join(RESULTS_DIR, 'confusion_matrix_final_test.png'))
-    save_confusion_matrix_table(test_matrix_final, CLASS_NAMES,
-                                os.path.join(RESULTS_DIR, 'confusion_matrix_final_test'))
-
-    final_metrics_summary = pd.DataFrame([
-        {'split': 'val', 'loss': val_loss, 'acc': val_acc, 'size': len(val_indices_final)},
-        {'split': 'test', 'loss': test_loss_final, 'acc': test_acc_final, 'size': len(test_indices_final)}
-    ])
-    save_dataframe_multi(final_metrics_summary, os.path.join(RESULTS_DIR, 'final_model_metrics_summary'))
-
-    # ---------- 敏感性分析 ----------
-    sensitivity_analysis_pipeline(
-        final_model,
-        params_test=params_test_final,
-        labels_test=labels_test_final,
-        test_idx=test_indices_final,
-        image_dirs=image_dirs,
-        test_loader=test_loader_final,
-        device=device
-    )
-
-    # ---------- 集成模型评估 ----------
-    print("\n" + "=" * 50)
-    print("集成模型评估（使用所有折的最佳模型在独立测试集上）")
-    print("=" * 50)
-    if len(ensemble_model_paths) > 0:
-        all_true_ensemble, all_pred_ensemble, _ = ensemble_predict(
-            ensemble_model_paths, test_loader_final, device, len(CLASS_NAMES)
-        )
-        ensemble_report = classification_report(all_true_ensemble, all_pred_ensemble, target_names=CLASS_NAMES, zero_division=0)
-        print("集成模型分类报告:")
-        print(ensemble_report)
-
-        save_text(ensemble_report, os.path.join(RESULTS_DIR, 'classification_report_ensemble.txt'))
-        ensemble_report_df = classification_report_to_dataframe(all_true_ensemble, all_pred_ensemble, CLASS_NAMES)
-        save_dataframe_multi(ensemble_report_df, os.path.join(RESULTS_DIR, 'classification_report_ensemble'))
-
-        from sklearn.metrics import confusion_matrix
-        ensemble_matrix = confusion_matrix(all_true_ensemble, all_pred_ensemble)
-        save_confusion_matrix(ensemble_matrix, CLASS_NAMES, os.path.join(RESULTS_DIR, 'confusion_matrix_ensemble.png'))
-        save_confusion_matrix_table(ensemble_matrix, CLASS_NAMES,
-                                    os.path.join(RESULTS_DIR, 'confusion_matrix_ensemble'))
-
-        save_prediction_details(all_true_ensemble, all_pred_ensemble, test_indices_final, CLASS_NAMES,
-                                os.path.join(RESULTS_DIR, 'predictions_ensemble'))
-    else:
-        print("警告：没有可用的折模型用于集成。")
-
-    print("\n全部流程完成。")
+    print("\n全部训练流程完成。")
 
 if __name__ == '__main__':
     main()

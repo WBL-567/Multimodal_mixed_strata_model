@@ -1,0 +1,968 @@
+# -*- coding: utf-8 -*-
+"""
+Chapter5_results_analysis.py
+
+Standalone script for reproducing Chapter 5 results of the manuscript:
+"A deep multimodal fusion model for real-time identification of mixed strata in shield tunnelling".
+
+This script is designed to be run AFTER the main training script has generated:
+    - final_model.pth
+    - final_scaler.pkl  (optional; if absent, the scaler is refitted using the same chronological training split)
+    - logs/best_model_fold_1.pth ... logs/best_model_fold_8.pth  (optional for Section 5.1 forward-chaining results)
+
+It does NOT retrain the model and does NOT change any model weights. It only loads saved models,
+reconstructs the chronological data splits, evaluates the models, and performs post-hoc ablation
+and sensitivity analyses in the same order as Chapter 5.
+
+Output directory:
+    results/chapter5_results/
+
+Expected folder/data layout options:
+    1) Script in repository root:
+       ./Chapter5_results_analysis.py
+       ./tunnelling_parameter_1.xlsx
+       ./11/ ./22/ ./33/
+       ./final_model.pth
+       ./final_scaler.pkl
+       ./logs/best_model_fold_*.pth
+
+    2) Script in code subfolder, data/images/model in parent folder:
+       ./code/Chapter5_results_analysis.py
+       ./tunnelling_parameter_1.xlsx
+       ./11/ ./22/ ./33/
+       ./code/final_model.pth
+       ./code/final_scaler.pkl
+       ./code/logs/best_model_fold_*.pth
+
+Run:
+    python Chapter5_results_analysis.py
+
+Optional:
+    python Chapter5_results_analysis.py --skip-kfold
+    python Chapter5_results_analysis.py --results-dir results/chapter5_results
+"""
+
+import argparse
+import os
+import random
+from collections import Counter
+from typing import Dict, List, Tuple, Optional
+
+import joblib
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from PIL import Image
+
+import torch
+import torch.nn as nn
+from torch.utils.data import Dataset, DataLoader
+from torchvision import transforms
+
+from sklearn.metrics import classification_report, confusion_matrix, ConfusionMatrixDisplay
+from sklearn.preprocessing import StandardScaler
+
+
+# =============================================================================
+# 0. Reproducibility and global configuration
+# =============================================================================
+
+
+def set_seed(seed: int = 42) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
+
+
+set_seed(42)
+
+# Avoid Chinese font rendering issues in figures.
+plt.rcParams["font.sans-serif"] = ["SimHei", "Arial Unicode MS", "DejaVu Sans"]
+plt.rcParams["axes.unicode_minus"] = False
+
+FEATURE_COLS = [
+    "推进速度",
+    "扭矩",
+    "推力",
+    "竖向振动加速度RMS",
+    "横向振动加速度RMS",
+    "轴向振动加速度RMS",
+]
+LABEL_COL = "地层分类"
+IMAGE_SUBDIRS = ["11", "22", "33"]
+IMAGE_CHANNEL_NAMES = ["Vertical", "Horizontal", "Axial"]
+CLASS_NAMES = ["HSS", "DMS", "TMS"]
+
+BATCH_SIZE = 32
+K_FOLDS = 10
+VALID_FOLDS = range(1, K_FOLDS - 1)  # 8 folds: 1 to 8
+FINAL_TEST_RATIO = 0.20
+FINAL_VAL_RATIO_IN_TRAINVAL = 0.10
+
+
+# =============================================================================
+# 1. Path utilities
+# =============================================================================
+
+
+def candidate_roots(script_dir: str) -> List[str]:
+    """Candidate roots for locating data, image folders, models, and logs."""
+    roots = [
+        script_dir,
+        os.path.dirname(script_dir),
+        os.getcwd(),
+        os.path.dirname(os.getcwd()),
+    ]
+    # Remove duplicates while preserving order.
+    unique_roots = []
+    for r in roots:
+        r = os.path.abspath(r)
+        if r not in unique_roots:
+            unique_roots.append(r)
+    return unique_roots
+
+
+def find_file(filename: str, roots: List[str], extra_subdirs: Optional[List[str]] = None) -> Optional[str]:
+    """Find a file from candidate roots and optional subdirectories."""
+    extra_subdirs = extra_subdirs or ["", "data", "results", "logs"]
+    for root in roots:
+        for sub in extra_subdirs:
+            path = os.path.join(root, sub, filename)
+            if os.path.isfile(path):
+                return os.path.abspath(path)
+    return None
+
+
+def find_dir(dirname: str, roots: List[str], extra_subdirs: Optional[List[str]] = None) -> Optional[str]:
+    """Find a directory from candidate roots and optional subdirectories."""
+    extra_subdirs = extra_subdirs or ["", "data", "images", "spectrograms", "processed_spectrograms"]
+    for root in roots:
+        for sub in extra_subdirs:
+            path = os.path.join(root, sub, dirname)
+            if os.path.isdir(path):
+                return os.path.abspath(path)
+    return None
+
+
+def ensure_dir(path: str) -> None:
+    os.makedirs(path, exist_ok=True)
+
+
+def resolve_paths(script_dir: str, results_dir_arg: Optional[str] = None) -> Dict[str, str]:
+    roots = candidate_roots(script_dir)
+
+    excel_path = find_file("tunnelling_parameter_1.xlsx", roots, ["", "data"])
+    if excel_path is None:
+        raise FileNotFoundError(
+            "Cannot find tunnelling_parameter_1.xlsx. Please place it in the repository root, "
+            "the script folder, or a data/ subfolder."
+        )
+
+    image_dirs = []
+    for sub in IMAGE_SUBDIRS:
+        dir_path = find_dir(sub, roots)
+        if dir_path is None:
+            raise FileNotFoundError(
+                f"Cannot find image folder '{sub}'. Please unzip the processed spectrogram dataset "
+                f"so that folders {IMAGE_SUBDIRS} are available."
+            )
+        image_dirs.append(dir_path)
+
+    final_model_path = find_file("final_model.pth", roots, ["", "models", "checkpoints"])
+    if final_model_path is None:
+        raise FileNotFoundError(
+            "Cannot find final_model.pth. Please run Multimodal_model_main_program.py first "
+            "to train and save the final model."
+        )
+
+    final_scaler_path = find_file("final_scaler.pkl", roots, ["", "models", "checkpoints"])
+
+    # Fold models are usually saved under logs/ in the main script.
+    fold_model_paths = {}
+    for fold in VALID_FOLDS:
+        p = find_file(f"best_model_fold_{fold}.pth", roots, ["logs", "", "models", "checkpoints"])
+        if p is not None:
+            fold_model_paths[fold] = p
+
+    if results_dir_arg:
+        results_dir = os.path.abspath(results_dir_arg)
+    else:
+        # Put Chapter 5 outputs under the script root if possible.
+        results_dir = os.path.join(script_dir, "results", "chapter5_results")
+    ensure_dir(results_dir)
+
+    return {
+        "excel_path": excel_path,
+        "image_dirs": image_dirs,
+        "final_model_path": final_model_path,
+        "final_scaler_path": final_scaler_path,
+        "fold_model_paths": fold_model_paths,
+        "results_dir": results_dir,
+    }
+
+
+# =============================================================================
+# 2. Dataset and model definition, identical to the submitted main model structure
+# =============================================================================
+
+
+def build_eval_transform():
+    """Validation/test/ablation preprocessing."""
+    return transforms.Compose([
+        transforms.Resize((224, 224)),
+        transforms.ToTensor(),
+        transforms.Normalize(mean=[0.5], std=[0.5]),
+    ])
+
+
+class TunnellingDataset(Dataset):
+    def __init__(self, params, labels, indices, image_dirs, transform=None):
+        self.params = params
+        self.labels = labels
+        self.indices = list(indices)
+        self.image_dirs = [os.path.abspath(p) for p in image_dirs]
+        self.image_files = [f"{idx + 1}.png" for idx in indices]
+        self.transform = transform
+
+        self.missing_count = 0
+        for img_file in self.image_files:
+            for sub_dir in self.image_dirs:
+                if not os.path.exists(os.path.join(sub_dir, img_file)):
+                    self.missing_count += 1
+        if self.missing_count > 0:
+            print(f"Warning: {self.missing_count}/{len(indices) * 3} image files are missing. Missing images will be replaced by blank images.")
+
+    def __len__(self):
+        return len(self.labels)
+
+    def __getitem__(self, idx):
+        images = []
+        for img_dir in self.image_dirs:
+            img_path = os.path.join(img_dir, self.image_files[idx])
+            try:
+                img = Image.open(img_path).convert("L")
+            except Exception:
+                img = Image.new("L", (224, 224))
+            if self.transform:
+                img = self.transform(img)
+            images.append(img)
+
+        return (
+            torch.tensor(self.params[idx], dtype=torch.float32),
+            *images,
+            torch.tensor(self.labels[idx], dtype=torch.long),
+        )
+
+
+class MultimodalModel(nn.Module):
+    """MLP + three shared-weight CNN branches + feature concatenation classifier."""
+
+    def __init__(self, param_input_size: int, num_classes: int = 3):
+        super().__init__()
+        self.enable_param = True
+        self.enable_image = True
+
+        self.param_fc = nn.Sequential(
+            nn.Linear(param_input_size, 128),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+        )
+
+        self.conv_block = nn.Sequential(
+            nn.Conv2d(1, 32, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(2),
+        )
+
+        self.image_fc = nn.Sequential(
+            nn.Linear(64 * 56 * 56, 128),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+        )
+
+        self.fusion = nn.Sequential(
+            nn.Linear(128 * 4, 512),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(512, num_classes),
+        )
+
+        self._init_weights()
+
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode="fan_out", nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            elif isinstance(m, nn.Linear):
+                nn.init.kaiming_normal_(m.weight, nonlinearity="relu")
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+
+    def process_image(self, img):
+        x = self.conv_block(img)
+        x = x.flatten(1)
+        x = self.image_fc(x)
+        return x
+
+    def forward(self, param_data, *images):
+        if not (self.enable_param or self.enable_image):
+            raise ValueError("At least one modality must be enabled.")
+
+        features = []
+        if self.enable_param:
+            param_feature = self.param_fc(param_data)
+        else:
+            param_feature = torch.zeros(param_data.size(0), 128, device=param_data.device)
+        features.append(param_feature)
+
+        img1, img2, img3 = images
+        if self.enable_image:
+            img1_feature = self.process_image(img1)
+            img2_feature = self.process_image(img2)
+            img3_feature = self.process_image(img3)
+        else:
+            batch_size = param_data.size(0)
+            zero_feature = torch.zeros(batch_size, 128, device=param_data.device)
+            img1_feature = zero_feature
+            img2_feature = zero_feature
+            img3_feature = zero_feature
+
+        features.extend([img1_feature, img2_feature, img3_feature])
+        combined = torch.cat(features, dim=1)
+        return self.fusion(combined)
+
+
+# =============================================================================
+# 3. Saving and evaluation utilities
+# =============================================================================
+
+
+def save_dataframe_multi(df: pd.DataFrame, base_path_no_ext: str) -> None:
+    csv_path = base_path_no_ext + ".csv"
+    xlsx_path = base_path_no_ext + ".xlsx"
+    ensure_dir(os.path.dirname(csv_path))
+    df.to_csv(csv_path, index=False, encoding="utf-8-sig")
+    df.to_excel(xlsx_path, index=False)
+    print(f"Saved: {csv_path}")
+    print(f"Saved: {xlsx_path}")
+
+
+def save_text(content: str, txt_path: str) -> None:
+    ensure_dir(os.path.dirname(txt_path))
+    with open(txt_path, "w", encoding="utf-8") as f:
+        f.write(content)
+    print(f"Saved text: {txt_path}")
+
+
+def classification_report_to_dataframe(y_true, y_pred, class_names) -> pd.DataFrame:
+    report_dict = classification_report(y_true, y_pred, target_names=class_names, output_dict=True, zero_division=0)
+    rows = []
+    for label, metrics in report_dict.items():
+        if isinstance(metrics, dict):
+            row = {"label": label}
+            row.update(metrics)
+            rows.append(row)
+        else:
+            rows.append({"label": label, "value": metrics})
+    return pd.DataFrame(rows)
+
+
+def save_prediction_details(y_true, y_pred, indices, class_names, base_path_no_ext: str) -> None:
+    df = pd.DataFrame({
+        "original_index": indices,
+        "true_label_id": y_true,
+        "pred_label_id": y_pred,
+        "true_label_name": [class_names[int(i)] for i in y_true],
+        "pred_label_name": [class_names[int(i)] for i in y_pred],
+        "correct": [int(t == p) for t, p in zip(y_true, y_pred)],
+    })
+    save_dataframe_multi(df, base_path_no_ext)
+
+
+def save_confusion_matrix_table(cm, class_names, base_path_no_ext: str) -> None:
+    df = pd.DataFrame(cm, index=[f"True_{c}" for c in class_names], columns=[f"Pred_{c}" for c in class_names])
+    save_dataframe_multi(df.reset_index().rename(columns={"index": "Label"}), base_path_no_ext)
+
+
+def save_confusion_matrix_figure(cm, class_names, save_path: str) -> None:
+    disp = ConfusionMatrixDisplay(confusion_matrix=cm, display_labels=class_names)
+    fig, ax = plt.subplots(figsize=(6, 6))
+    disp.plot(cmap="Blues", ax=ax, colorbar=False)
+    plt.title("Confusion Matrix")
+    plt.tight_layout()
+    plt.savefig(save_path, dpi=200)
+    print(f"Saved figure: {save_path}")
+    base, _ = os.path.splitext(save_path)
+    try:
+        plt.savefig(base + ".emf", format="emf")
+    except Exception:
+        plt.savefig(base + ".svg", format="svg")
+    plt.close()
+
+
+def plot_and_save_bar(values, labels, title, ylabel, base_path_no_ext: str) -> None:
+    plt.figure(figsize=(8, 5))
+    plt.bar(labels, values)
+    plt.title(title)
+    plt.ylabel(ylabel)
+    plt.xticks(rotation=25)
+    plt.tight_layout()
+    png_path = base_path_no_ext + ".png"
+    plt.savefig(png_path, dpi=200)
+    print(f"Saved figure: {png_path}")
+    try:
+        plt.savefig(base_path_no_ext + ".emf", format="emf")
+    except Exception:
+        plt.savefig(base_path_no_ext + ".svg", format="svg")
+    plt.close()
+
+
+@torch.no_grad()
+def evaluate(model, loader, criterion, device):
+    model.eval()
+    running_loss = 0.0
+    correct = 0
+    total = 0
+    all_true = []
+    all_pred = []
+
+    for params, img1, img2, img3, labels in loader:
+        params = params.to(device)
+        img1 = img1.to(device)
+        img2 = img2.to(device)
+        img3 = img3.to(device)
+        labels = labels.to(device)
+
+        outputs = model(params, img1, img2, img3)
+        loss = criterion(outputs, labels)
+
+        running_loss += loss.item() * labels.size(0)
+        _, predicted = outputs.max(1)
+        total += labels.size(0)
+        correct += predicted.eq(labels).sum().item()
+        all_true.extend(labels.cpu().numpy())
+        all_pred.extend(predicted.cpu().numpy())
+
+    epoch_loss = running_loss / total
+    epoch_acc = 100.0 * correct / total
+    matrix = confusion_matrix(all_true, all_pred)
+    return epoch_loss, epoch_acc, matrix, all_true, all_pred
+
+
+def load_model(model_path: str, device) -> MultimodalModel:
+    model = MultimodalModel(param_input_size=len(FEATURE_COLS), num_classes=len(CLASS_NAMES)).to(device)
+    state = torch.load(model_path, map_location=device)
+    model.load_state_dict(state)
+    model.eval()
+    return model
+
+
+# =============================================================================
+# 4. Data loading and chronological split reconstruction
+# =============================================================================
+
+
+def load_numerical_data(excel_path: str) -> Tuple[np.ndarray, np.ndarray, np.ndarray, pd.DataFrame]:
+    df = pd.read_excel(excel_path)
+    required_cols = FEATURE_COLS + [LABEL_COL]
+    missing_cols = [c for c in required_cols if c not in df.columns]
+    if missing_cols:
+        raise ValueError(
+            f"The numerical input file is missing columns: {missing_cols}\n"
+            f"Current FEATURE_COLS are: {FEATURE_COLS}\n"
+            "Please make sure the README, manuscript, and Excel columns are consistent."
+        )
+    data = df[FEATURE_COLS].values
+    labels = df[LABEL_COL].values.astype(int)
+    original_indices = np.arange(len(df))
+    print("Original label distribution:", dict(Counter(labels)))
+    return data, labels, original_indices, df
+
+
+def build_kfold_indices(labels: np.ndarray, original_indices: np.ndarray, fold: int):
+    train_idx, val_idx, test_idx = [], [], []
+    for c in np.unique(labels):
+        class_idx = original_indices[labels == c]
+        blocks = np.array_split(class_idx, K_FOLDS)
+        for b in blocks[:fold]:
+            train_idx.extend(b)
+        val_idx.extend(blocks[fold])
+        test_idx.extend(blocks[fold + 1])
+    return sorted(train_idx), sorted(val_idx), sorted(test_idx)
+
+
+def build_final_indices(labels: np.ndarray, original_indices: np.ndarray):
+    train_indices_final, val_indices_final, test_indices_final = [], [], []
+    for c in np.unique(labels):
+        class_idx = original_indices[labels == c]
+        split_test = int(len(class_idx) * (1 - FINAL_TEST_RATIO))
+        trainval_idx = class_idx[:split_test]
+        test_idx_c = class_idx[split_test:]
+
+        split_val = int(len(trainval_idx) * (1 - FINAL_VAL_RATIO_IN_TRAINVAL))
+        train_idx_c = trainval_idx[:split_val]
+        val_idx_c = trainval_idx[split_val:]
+
+        train_indices_final.extend(train_idx_c)
+        val_indices_final.extend(val_idx_c)
+        test_indices_final.extend(test_idx_c)
+
+    return sorted(train_indices_final), sorted(val_indices_final), sorted(test_indices_final)
+
+
+def make_loader(params, labels, indices, image_dirs, transform, batch_size: int = BATCH_SIZE):
+    dataset = TunnellingDataset(params, labels, indices, image_dirs, transform)
+    return DataLoader(dataset, batch_size=batch_size, shuffle=False, num_workers=0), dataset
+
+
+# =============================================================================
+# 5. Chapter 5 result reproduction, in manuscript order
+# =============================================================================
+
+
+def section_5_1_1_forward_chaining(paths, data, labels, original_indices, device, skip: bool = False):
+    """Section 5.1: blocked temporal forward-chaining evaluation using saved fold models."""
+    results_dir = paths["results_dir"]
+    image_dirs = paths["image_dirs"]
+    fold_model_paths: Dict[int, str] = paths["fold_model_paths"]
+    transform_eval = build_eval_transform()
+    criterion = nn.CrossEntropyLoss()
+
+    print("\n" + "=" * 80)
+    print("Section 5.1.1  Blocked temporal forward-chaining evaluation")
+    print("=" * 80)
+
+    if skip:
+        print("Skipped by --skip-kfold.")
+        return None
+
+    if len(fold_model_paths) == 0:
+        print("No saved fold models were found. Skip Section 5.1.1.")
+        print("To reproduce this section, run the main training script first and keep logs/best_model_fold_*.pth.")
+        return None
+
+    fold_summaries = []
+    all_fold_acc = []
+
+    for fold in VALID_FOLDS:
+        if fold not in fold_model_paths:
+            print(f"Fold {fold}: saved fold model not found, skip this fold.")
+            continue
+
+        print("\n" + "-" * 60)
+        print(f"Evaluating Fold {fold}: {fold_model_paths[fold]}")
+
+        train_idx, val_idx, test_idx = build_kfold_indices(labels, original_indices, fold)
+        params_train = data[train_idx]
+        labels_train = labels[train_idx]
+        params_test = data[test_idx]
+        labels_test = labels[test_idx]
+
+        scaler = StandardScaler()
+        scaler.fit(params_train)
+        params_test = scaler.transform(params_test)
+
+        test_loader, test_dataset = make_loader(params_test, labels_test, test_idx, image_dirs, transform_eval)
+        print(f"Fold {fold} test distribution: {dict(Counter(labels_test))}")
+        print(f"Fold {fold} missing images: {test_dataset.missing_count}/{len(test_idx) * 3}")
+
+        model = load_model(fold_model_paths[fold], device)
+        test_loss, test_acc, matrix, all_true, all_pred = evaluate(model, test_loader, criterion, device)
+        all_fold_acc.append(test_acc)
+
+        report_text = classification_report(all_true, all_pred, target_names=CLASS_NAMES, zero_division=0)
+        print(f"Fold {fold} test accuracy: {test_acc:.2f}%")
+        print(report_text)
+
+        prefix = os.path.join(results_dir, f"5_1_1_fold{fold}")
+        save_text(report_text, prefix + "_classification_report.txt")
+        save_dataframe_multi(classification_report_to_dataframe(all_true, all_pred, CLASS_NAMES), prefix + "_classification_report")
+        save_prediction_details(all_true, all_pred, test_idx, CLASS_NAMES, prefix + "_predictions")
+        save_confusion_matrix_figure(matrix, CLASS_NAMES, prefix + "_confusion_matrix.png")
+        save_confusion_matrix_table(matrix, CLASS_NAMES, prefix + "_confusion_matrix")
+
+        report_dict = classification_report(all_true, all_pred, target_names=CLASS_NAMES, output_dict=True, zero_division=0)
+        summary = {
+            "fold": fold,
+            "test_acc": test_acc,
+            "test_loss": test_loss,
+            "train_size": len(train_idx),
+            "val_size": len(val_idx),
+            "test_size": len(test_idx),
+            "train_dist": str(dict(Counter(labels_train))),
+            "test_dist": str(dict(Counter(labels_test))),
+            "macro_f1": report_dict["macro avg"]["f1-score"],
+            "weighted_f1": report_dict["weighted avg"]["f1-score"],
+        }
+        for cname in CLASS_NAMES:
+            summary[f"{cname}_precision"] = report_dict[cname]["precision"]
+            summary[f"{cname}_recall"] = report_dict[cname]["recall"]
+            summary[f"{cname}_f1"] = report_dict[cname]["f1-score"]
+        fold_summaries.append(summary)
+
+    if len(all_fold_acc) == 0:
+        return None
+
+    fold_df = pd.DataFrame(fold_summaries)
+    overall_summary_df = pd.DataFrame([{
+        "mean_test_acc": float(np.mean(all_fold_acc)),
+        "std_test_acc": float(np.std(all_fold_acc)),
+        "num_folds": len(all_fold_acc),
+    }])
+
+    save_dataframe_multi(fold_df, os.path.join(results_dir, "5_1_1_kfold_fold_metrics"))
+    save_dataframe_multi(overall_summary_df, os.path.join(results_dir, "5_1_1_kfold_overall_summary"))
+
+    plt.figure(figsize=(8, 4))
+    x = [s["fold"] for s in fold_summaries]
+    plt.plot(x, all_fold_acc, marker="o")
+    plt.xticks(x)
+    plt.xlabel("Fold")
+    plt.ylabel("Test Accuracy (%)")
+    plt.title("Accuracy across Forward-Chaining Folds")
+    plt.grid(True)
+    plt.tight_layout()
+    plt.savefig(os.path.join(results_dir, "5_1_1_fold_accuracies.png"), dpi=200)
+    plt.close()
+
+    print(f"\nForward-chaining mean accuracy: {np.mean(all_fold_acc):.2f}% ± {np.std(all_fold_acc):.2f}%")
+    return {"fold_df": fold_df, "overall_summary_df": overall_summary_df}
+
+
+def prepare_final_test_loader(paths, data, labels, original_indices, device):
+    """Reconstruct final chronological train/val/test split and return loaded final model and loaders."""
+    image_dirs = paths["image_dirs"]
+    transform_eval = build_eval_transform()
+
+    train_idx, val_idx, test_idx = build_final_indices(labels, original_indices)
+
+    params_train = data[train_idx]
+    labels_train = labels[train_idx]
+    params_val = data[val_idx]
+    labels_val = labels[val_idx]
+    params_test = data[test_idx]
+    labels_test = labels[test_idx]
+
+    if paths.get("final_scaler_path") and os.path.isfile(paths["final_scaler_path"]):
+        scaler = joblib.load(paths["final_scaler_path"])
+        print(f"Loaded final scaler: {paths['final_scaler_path']}")
+    else:
+        scaler = StandardScaler()
+        scaler.fit(params_train)
+        print("final_scaler.pkl was not found. Refit StandardScaler using the reconstructed final training split.")
+
+    params_val = scaler.transform(params_val)
+    params_test = scaler.transform(params_test)
+
+    val_loader, val_dataset = make_loader(params_val, labels_val, val_idx, image_dirs, transform_eval)
+    test_loader, test_dataset = make_loader(params_test, labels_test, test_idx, image_dirs, transform_eval)
+
+    final_model = load_model(paths["final_model_path"], device)
+    print(f"Loaded final model: {paths['final_model_path']}")
+    print("Final split distributions:")
+    print("  train:", dict(Counter(labels_train)))
+    print("  val:  ", dict(Counter(labels_val)))
+    print("  test: ", dict(Counter(labels_test)))
+    print(f"Final val missing images:  {val_dataset.missing_count}/{len(val_idx) * 3}")
+    print(f"Final test missing images: {test_dataset.missing_count}/{len(test_idx) * 3}")
+
+    return {
+        "model": final_model,
+        "scaler": scaler,
+        "val_loader": val_loader,
+        "test_loader": test_loader,
+        "val_idx": val_idx,
+        "test_idx": test_idx,
+        "params_test": params_test,
+        "labels_test": labels_test,
+        "labels_val": labels_val,
+        "labels_test_raw": labels_test,
+    }
+
+
+def section_5_1_2_final_independent_test(paths, final_pack, device):
+    """Section 5.1: final validation and independent later-stage test evaluation."""
+    results_dir = paths["results_dir"]
+    model = final_pack["model"]
+    criterion = nn.CrossEntropyLoss()
+
+    print("\n" + "=" * 80)
+    print("Section 5.1.2  Final model validation and independent later-stage test evaluation")
+    print("=" * 80)
+
+    # Validation set evaluation
+    val_loss, val_acc, val_matrix, val_true, val_pred = evaluate(model, final_pack["val_loader"], criterion, device)
+    val_report_text = classification_report(val_true, val_pred, target_names=CLASS_NAMES, zero_division=0)
+    print(f"Final validation accuracy: {val_acc:.2f}%")
+    print(val_report_text)
+
+    prefix_val = os.path.join(results_dir, "5_1_2_final_val")
+    save_text(val_report_text, prefix_val + "_classification_report.txt")
+    save_dataframe_multi(classification_report_to_dataframe(val_true, val_pred, CLASS_NAMES), prefix_val + "_classification_report")
+    save_prediction_details(val_true, val_pred, final_pack["val_idx"], CLASS_NAMES, prefix_val + "_predictions")
+    save_confusion_matrix_figure(val_matrix, CLASS_NAMES, prefix_val + "_confusion_matrix.png")
+    save_confusion_matrix_table(val_matrix, CLASS_NAMES, prefix_val + "_confusion_matrix")
+
+    # Independent test set evaluation
+    test_loss, test_acc, test_matrix, test_true, test_pred = evaluate(model, final_pack["test_loader"], criterion, device)
+    test_report_text = classification_report(test_true, test_pred, target_names=CLASS_NAMES, zero_division=0)
+    print(f"Independent test accuracy: {test_acc:.2f}%")
+    print(test_report_text)
+
+    prefix_test = os.path.join(results_dir, "5_1_2_final_independent_test")
+    save_text(test_report_text, prefix_test + "_classification_report.txt")
+    save_dataframe_multi(classification_report_to_dataframe(test_true, test_pred, CLASS_NAMES), prefix_test + "_classification_report")
+    save_prediction_details(test_true, test_pred, final_pack["test_idx"], CLASS_NAMES, prefix_test + "_predictions")
+    save_confusion_matrix_figure(test_matrix, CLASS_NAMES, prefix_test + "_confusion_matrix.png")
+    save_confusion_matrix_table(test_matrix, CLASS_NAMES, prefix_test + "_confusion_matrix")
+
+    summary = pd.DataFrame([
+        {"section": "5.1.2", "split": "validation", "loss": val_loss, "accuracy": val_acc, "size": len(val_true)},
+        {"section": "5.1.2", "split": "independent_test", "loss": test_loss, "accuracy": test_acc, "size": len(test_true)},
+    ])
+    save_dataframe_multi(summary, os.path.join(results_dir, "5_1_2_final_model_metrics_summary"))
+    return {"val_acc": val_acc, "test_acc": test_acc}
+
+
+def evaluate_modalities(model, loader, device, enable_param: bool, enable_image: bool) -> float:
+    prev_param = model.enable_param
+    prev_image = model.enable_image
+    model.enable_param = enable_param
+    model.enable_image = enable_image
+    criterion = nn.CrossEntropyLoss()
+    _, acc, _, _, _ = evaluate(model, loader, criterion, device)
+    model.enable_param = prev_param
+    model.enable_image = prev_image
+    return acc
+
+
+def section_5_2_1_cross_modality_ablation(paths, final_pack, device):
+    """Section 5.2.1: multimodal / numerical-only / image-only comparison."""
+    print("\n" + "=" * 80)
+    print("Section 5.2.1  Cross-modality ablation analysis")
+    print("=" * 80)
+
+    model = final_pack["model"]
+    test_loader = final_pack["test_loader"]
+    results_dir = paths["results_dir"]
+
+    results = {
+        "both_modalities": evaluate_modalities(model, test_loader, device, True, True),
+        "params_only": evaluate_modalities(model, test_loader, device, True, False),
+        "images_only": evaluate_modalities(model, test_loader, device, False, True),
+    }
+
+    for k, v in results.items():
+        print(f"{k}: {v:.2f}%")
+
+    df = pd.DataFrame([{"modality": k, "accuracy": v} for k, v in results.items()])
+    save_dataframe_multi(df, os.path.join(results_dir, "5_2_1_cross_modality_ablation"))
+    plot_and_save_bar(
+        values=[results["both_modalities"], results["params_only"], results["images_only"]],
+        labels=["Both", "Numerical-only", "Image-only"],
+        title="Cross-modality Ablation",
+        ylabel="Accuracy (%)",
+        base_path_no_ext=os.path.join(results_dir, "5_2_1_cross_modality_ablation"),
+    )
+    return results
+
+
+@torch.no_grad()
+def calculate_directional_image_importance(model, test_loader, device, use_param: bool = True):
+    """Set each directional spectrogram to zero and calculate the accuracy drop."""
+    criterion = nn.CrossEntropyLoss()
+
+    prev_param = model.enable_param
+    prev_image = model.enable_image
+    model.enable_param = use_param
+    model.enable_image = True
+
+    _, base_acc, _, _, _ = evaluate(model, test_loader, criterion, device)
+    importance = []
+
+    for img_zero_idx in range(3):
+        model.eval()
+        running_correct = 0
+        total = 0
+        for params, img1, img2, img3, labels in test_loader:
+            params = params.to(device)
+            img1 = img1.to(device)
+            img2 = img2.to(device)
+            img3 = img3.to(device)
+            labels = labels.to(device)
+
+            imgs = [img1, img2, img3]
+            imgs[img_zero_idx] = torch.zeros_like(imgs[img_zero_idx])
+
+            outputs = model(params, imgs[0], imgs[1], imgs[2])
+            _, predicted = outputs.max(1)
+            total += labels.size(0)
+            running_correct += predicted.eq(labels).sum().item()
+
+        acc_after_zeroing = 100.0 * running_correct / total
+        drop = base_acc - acc_after_zeroing
+        importance.append(drop)
+        print(
+            f"{IMAGE_CHANNEL_NAMES[img_zero_idx]} spectrogram zeroed: "
+            f"base_acc={base_acc:.4f}%, acc={acc_after_zeroing:.4f}%, drop={drop:.4f}"
+        )
+
+    model.enable_param = prev_param
+    model.enable_image = prev_image
+    return base_acc, importance
+
+
+def section_5_2_2_directional_spectrogram_contribution(paths, final_pack, device):
+    """Section 5.2.2: contribution of vertical, horizontal, and axial spectrograms."""
+    print("\n" + "=" * 80)
+    print("Section 5.2.2  Directional vibration spectrogram contribution analysis")
+    print("=" * 80)
+
+    model = final_pack["model"]
+    test_loader = final_pack["test_loader"]
+    results_dir = paths["results_dir"]
+
+    # This corresponds to directional spectrogram contribution under the multimodal setting.
+    base_acc, drops = calculate_directional_image_importance(model, test_loader, device, use_param=True)
+    total_drop = sum(drops) if sum(drops) > 0 else 1e-12
+    percent = [v / total_drop * 100 for v in drops]
+
+    df = pd.DataFrame({
+        "section": "5.2.2",
+        "image_channel_id": IMAGE_SUBDIRS,
+        "image_channel_name": IMAGE_CHANNEL_NAMES,
+        "base_accuracy": base_acc,
+        "accuracy_drop_after_zeroing": drops,
+        "contribution_percent": percent,
+    })
+    save_dataframe_multi(df, os.path.join(results_dir, "5_2_2_directional_spectrogram_contribution"))
+    plot_and_save_bar(
+        values=percent,
+        labels=IMAGE_CHANNEL_NAMES,
+        title="Directional Spectrogram Contribution",
+        ylabel="Contribution (%)",
+        base_path_no_ext=os.path.join(results_dir, "5_2_2_directional_spectrogram_contribution"),
+    )
+    return df
+
+
+def section_5_2_3_numerical_feature_sensitivity(paths, final_pack, device):
+    """Section 5.2.3: permutation-based numerical feature sensitivity analysis."""
+    print("\n" + "=" * 80)
+    print("Section 5.2.3  Numerical feature sensitivity analysis")
+    print("=" * 80)
+
+    model = final_pack["model"]
+    params_test = final_pack["params_test"]
+    labels_test = final_pack["labels_test"]
+    test_idx = final_pack["test_idx"]
+    image_dirs = paths["image_dirs"]
+    results_dir = paths["results_dir"]
+    transform_eval = build_eval_transform()
+    criterion = nn.CrossEntropyLoss()
+
+    # Follow the original main program: enable numerical modality and disable image modality.
+    prev_param = model.enable_param
+    prev_image = model.enable_image
+    model.enable_param = True
+    model.enable_image = False
+
+    base_dataset = TunnellingDataset(params_test, labels_test, test_idx, image_dirs, transform_eval)
+    base_loader = DataLoader(base_dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+    _, base_acc, _, _, _ = evaluate(model, base_loader, criterion, device)
+    print(f"Numerical-only baseline accuracy: {base_acc:.4f}%")
+
+    rows = []
+    for j, feature_name in enumerate(FEATURE_COLS):
+        params_shuffled = params_test.copy()
+        rng = np.random.default_rng(42 + j)  # deterministic permutation for each feature
+        rng.shuffle(params_shuffled[:, j])
+
+        dataset = TunnellingDataset(params_shuffled, labels_test, test_idx, image_dirs, transform_eval)
+        loader = DataLoader(dataset, batch_size=BATCH_SIZE, shuffle=False, num_workers=0)
+        _, acc, _, _, _ = evaluate(model, loader, criterion, device)
+
+        sensitivity_score = abs(base_acc - acc)
+        print(f"{feature_name}: shuffled_acc={acc:.4f}%, sensitivity_score={sensitivity_score:.4f}")
+        rows.append({
+            "section": "5.2.3",
+            "feature": feature_name,
+            "baseline_accuracy_numerical_only": base_acc,
+            "accuracy_after_permutation": acc,
+            "sensitivity_score": sensitivity_score,
+        })
+
+    model.enable_param = prev_param
+    model.enable_image = prev_image
+
+    df = pd.DataFrame(rows)
+    save_dataframe_multi(df, os.path.join(results_dir, "5_2_3_numerical_feature_sensitivity"))
+    plot_and_save_bar(
+        values=df["sensitivity_score"].values.tolist(),
+        labels=df["feature"].values.tolist(),
+        title="Numerical Feature Sensitivity",
+        ylabel="Sensitivity score (%)",
+        base_path_no_ext=os.path.join(results_dir, "5_2_3_numerical_feature_sensitivity"),
+    )
+    return df
+
+
+# =============================================================================
+# 6. Main execution
+# =============================================================================
+
+
+def main():
+    parser = argparse.ArgumentParser(description="Reproduce Chapter 5 results in manuscript order.")
+    parser.add_argument("--skip-kfold", action="store_true", help="Skip Section 5.1.1 forward-chaining fold evaluation.")
+    parser.add_argument("--results-dir", type=str, default=None, help="Custom output directory for Chapter 5 result files.")
+    args = parser.parse_args()
+
+    script_dir = os.path.abspath(os.path.dirname(__file__))
+    paths = resolve_paths(script_dir, args.results_dir)
+
+    print("\nResolved paths:")
+    print(f"  Excel:        {paths['excel_path']}")
+    print(f"  Image dirs:   {paths['image_dirs']}")
+    print(f"  Final model:  {paths['final_model_path']}")
+    print(f"  Final scaler: {paths['final_scaler_path']}")
+    print(f"  Fold models:  {len(paths['fold_model_paths'])} found")
+    print(f"  Results dir:  {paths['results_dir']}")
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    print(f"Using device: {device}")
+
+    data, labels, original_indices, _ = load_numerical_data(paths["excel_path"])
+
+    # Section 5.1.1: blocked temporal forward-chaining folds.
+    section_5_1_1_forward_chaining(paths, data, labels, original_indices, device, skip=args.skip_kfold)
+
+    # Prepare final model and final split once for Sections 5.1.2, 5.2.1, 5.2.2, and 5.2.3.
+    final_pack = prepare_final_test_loader(paths, data, labels, original_indices, device)
+
+    # Section 5.1.2: validation and independent later-stage test.
+    section_5_1_2_final_independent_test(paths, final_pack, device)
+
+    # Section 5.2.1: modality ablation.
+    section_5_2_1_cross_modality_ablation(paths, final_pack, device)
+
+    # Section 5.2.2: directional spectrogram contribution.
+    section_5_2_2_directional_spectrogram_contribution(paths, final_pack, device)
+
+    # Section 5.2.3: numerical feature sensitivity.
+    section_5_2_3_numerical_feature_sensitivity(paths, final_pack, device)
+
+    print("\nAll Chapter 5 analyses are complete.")
+    print(f"Output files are saved in: {paths['results_dir']}")
+
+
+if __name__ == "__main__":
+    main()

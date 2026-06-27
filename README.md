@@ -2,6 +2,7 @@ Multimodal_mixed_strata_model
 This repository provides the implementation code, processed numerical input data, LOF-cleaned tunnelling-parameter data, representative raw vibration samples, and result-analysis scripts for multimodal mixed strata identification in shield tunnelling.
 The complete processed spectrogram image dataset used as the image-modality input is available on Zenodo:
 https://doi.org/10.5281/zenodo.20645879
+
 1. Overview
 This repository contains code and data for a deep multimodal fusion model for real-time identification of mixed strata in shield tunnelling. The model uses two types of inputs:
 Numerical input: LOF-cleaned tunnelling parameters and vibration RMS features.
@@ -13,6 +14,7 @@ The stratum labels are:
 1 = DMS: Dual-layer Mixed Stratum
 2 = TMS: Triple-layer Mixed Stratum
 ```
+
 2. Repository Contents
 ```text
 .
@@ -44,6 +46,7 @@ The stratum labels are:
 ├── 15_3_2.zip
 └── 15_3_3.zip
 ```
+
 3. Data Description
 3.1 LOF-Cleaned Tunnelling Parameters
 The following files provide tunnelling parameters before and after LOF-based cleaning for the three stratum types:
@@ -62,6 +65,7 @@ n_neighbors = 5
 contamination = 0.02
 ```
 LOF-identified samples were processed by linear interpolation.
+
 3.2 Numerical Input for the Multimodal Model
 The file below is the numerical input used by the multimodal model:
 ```text
@@ -82,6 +86,7 @@ The numerical input columns include:
 轴向振动加速度RMS
 地层分类
 ```
+
 3.3 Processed Spectrogram Image Dataset
 The complete processed spectrogram image dataset used as the image-modality input of the multimodal model is deposited on Zenodo:
 ```text
@@ -94,6 +99,7 @@ The Zenodo dataset contains three compressed files corresponding to the three st
 33.zip = TMS: Triple-layer Mixed Stratum
 ```
 After downloading and decompressing the Zenodo files, the folders `11`, `22`, and `33` should be placed in the same working directory level as `tunnelling_parameter_1.xlsx`, or in the directory expected by the scripts.
+
 4. Raw Vibration Data and Spectrogram Generation
 Representative raw vibration files are provided to demonstrate the preprocessing workflow from raw vibration signals to frequency-domain spectrogram images.
 Each sample `.mat` file contains several variables. In the spectrogram generation script:
@@ -127,16 +133,20 @@ For example:
 ```
 represent one randomly selected group of raw vibration signals from stratum type 1, including vertical, horizontal, and axial directions.
 The provided raw vibration samples were anonymized and self-numbered to remove project-identifiable information while preserving the correspondence among sample group, stratum type, and vibration direction.
+
 5. How to Run
 5.1 Install Dependencies
 ```bash
 pip install -r requirements.txt
 ```
+
 5.2 Run LOF-Based Data Cleaning
+
 ```bash
 python Data_cleaning_LOF.py
 ```
 This script performs LOF-based cleaning for tunnelling parameters and outputs cleaned data and comparison figures.
+
 5.3 Generate Spectrogram Images from Sample Raw Vibration Data
 ```bash
 python Spectrogram_generation.py
@@ -148,6 +158,7 @@ Sampling frequency = 2560 Hz
 Segment duration = 5 s
 Image size = 224 × 224 pixels
 ```
+
 5.4 Train the Multimodal Model
 ```bash
 python Multimodal_model_main_program.py
@@ -165,8 +176,8 @@ Full model training requires the processed spectrogram image dataset aligned wit
 https://doi.org/10.5281/zenodo.20645879
 ```
 The representative `.mat` and `.zip` files in this GitHub repository are mainly used to demonstrate the raw vibration data structure and the spectrogram generation procedure.
-### 5.5 Hyperparameter Settings
 
+5.5 Hyperparameter Settings
 To improve reproducibility, the main model architecture, training, preprocessing, and evaluation hyperparameters are summarized below.
 
 #### Model architecture
@@ -348,7 +359,7 @@ logs/best_model_fold_1.pth
 logs/best_model_fold_8.pth
 ```
 
-5.6Run Result Analysis
+5.6 Run Result Analysis
 After model training is completed, run:
 ```bash
 python Result_Analysis.py
@@ -369,6 +380,7 @@ If the saved fold models are not needed, the fold-evaluation part can be skipped
 ```bash
 python Result_Analysis.py --skip-kfold
 ```
+
 6. Reproducibility Workflow
 The main data-processing and model-evaluation workflow is:
 ```text
@@ -384,6 +396,7 @@ The main data-processing and model-evaluation workflow is:
 10. Train the multimodal fusion model.
 11. Run the result-analysis script to reproduce the reported evaluation and analysis outputs.
 ```
+
 7. Data Availability
 The implementation code, processed numerical input data, LOF-cleaned tunnelling-parameter data, representative raw vibration files, and result-analysis scripts are available in this GitHub repository.
 The complete processed spectrogram image dataset used as the image-modality input of the multimodal model is available on Zenodo:
@@ -393,6 +406,7 @@ https://doi.org/10.5281/zenodo.20645879
 The processed spectrogram image dataset is deposited on Zenodo because of its large file size. Zenodo is used as the long-term public data repository for the large-size processed image dataset.
 Representative anonymized raw vibration files are provided in this GitHub repository to demonstrate the data structure and the spectrogram generation workflow. The anonymized numbering rule preserves the correspondence among the randomly selected sample group, stratum type, and vibration direction, while excluding project-identifiable information such as exact project location, exact chainage, original ring numbers, and detailed construction logs.
 The released files are provided for academic research and reproducibility purposes.
+
 8. Citation
 If you use this repository, the provided code, or the dataset, please cite the corresponding manuscript and the Zenodo dataset.
 Processed spectrogram image dataset:

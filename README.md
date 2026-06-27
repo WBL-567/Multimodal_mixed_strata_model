@@ -1,21 +1,33 @@
-Multimodal_mixed_strata_model
-This repository provides the implementation code, processed numerical input data, LOF-cleaned tunnelling-parameter data, representative raw vibration samples, and result-analysis scripts for multimodal mixed strata identification in shield tunnelling.
-The complete processed spectrogram image dataset used as the image-modality input is available on Zenodo:
-https://doi.org/10.5281/zenodo.20645879
+# Multimodal_mixed_strata_model
 
-1. Overview
+This repository provides the implementation code, processed numerical input data, LOF-cleaned tunnelling-parameter data, representative raw vibration samples, and result-analysis scripts for multimodal mixed strata identification in shield tunnelling.
+
+The complete processed spectrogram image dataset used as the image-modality input is available on Zenodo:
+
+```text
+https://doi.org/10.5281/zenodo.20645879
+```
+
+## 1. Overview
+
 This repository contains code and data for a deep multimodal fusion model for real-time identification of mixed strata in shield tunnelling. The model uses two types of inputs:
+
 Numerical input: LOF-cleaned tunnelling parameters and vibration RMS features.
+
 Image input: processed frequency-domain spectrogram images generated from three-dimensional vibration signals.
+
 The numerical branch is based on an MLP, and the image branch is based on CNNs. The extracted features are concatenated for final stratum classification.
+
 The stratum labels are:
+
 ```text
 0 = HSS: Homogeneous Stratum
 1 = DMS: Dual-layer Mixed Stratum
 2 = TMS: Triple-layer Mixed Stratum
 ```
 
-2. Repository Contents
+## 2. Repository Contents
+
 ```text
 .
 ├── Data_cleaning_LOF.py
@@ -47,9 +59,12 @@ The stratum labels are:
 └── 15_3_3.zip
 ```
 
-3. Data Description
-3.1 LOF-Cleaned Tunnelling Parameters
+## 3. Data Description
+
+### 3.1 LOF-Cleaned Tunnelling Parameters
+
 The following files provide tunnelling parameters before and after LOF-based cleaning for the three stratum types:
+
 ```text
 1HSS_original.xlsx
 1HSS_clean.xlsx
@@ -58,25 +73,36 @@ The following files provide tunnelling parameters before and after LOF-based cle
 3TMS_original.xlsx
 3TMS_clean.xlsx
 ```
+
 Before LOF processing, tunnelling-parameter samples containing zero values were removed. The LOF-cleaned data were then obtained using `Data_cleaning_LOF.py`.
+
 The LOF settings are:
+
 ```text
 n_neighbors = 5
 contamination = 0.02
 ```
+
 LOF-identified samples were processed by linear interpolation.
 
-3.2 Numerical Input for the Multimodal Model
+### 3.2 Numerical Input for the Multimodal Model
+
 The file below is the numerical input used by the multimodal model:
+
 ```text
 tunnelling_parameter_1.xlsx
 ```
+
 This file was constructed by combining:
-LOF-cleaned tunnelling parameters;
-corresponding vibration RMS values in three directions;
-stratum labels.
+
+- LOF-cleaned tunnelling parameters;
+- corresponding vibration RMS values in three directions;
+- stratum labels.
+
 The vibration RMS samples corresponding to removed zero-value tunnelling-parameter records were also deleted, so that the tunnelling parameters and vibration features remained aligned.
+
 The numerical input columns include:
+
 ```text
 推进速度
 扭矩
@@ -87,83 +113,115 @@ The numerical input columns include:
 地层分类
 ```
 
-3.3 Processed Spectrogram Image Dataset
+### 3.3 Processed Spectrogram Image Dataset
+
 The complete processed spectrogram image dataset used as the image-modality input of the multimodal model is deposited on Zenodo:
+
 ```text
 https://doi.org/10.5281/zenodo.20645879
 ```
+
 The Zenodo dataset contains three compressed files corresponding to the three stratum types:
+
 ```text
 11.zip = HSS: Homogeneous Stratum
 22.zip = DMS: Dual-layer Mixed Stratum
 33.zip = TMS: Triple-layer Mixed Stratum
 ```
+
 After downloading and decompressing the Zenodo files, the folders `11`, `22`, and `33` should be placed in the same working directory level as `tunnelling_parameter_1.xlsx`, or in the directory expected by the scripts.
 
-4. Raw Vibration Data and Spectrogram Generation
+## 4. Raw Vibration Data and Spectrogram Generation
+
 Representative raw vibration files are provided to demonstrate the preprocessing workflow from raw vibration signals to frequency-domain spectrogram images.
+
 Each sample `.mat` file contains several variables. In the spectrogram generation script:
+
 ```text
 a2 = time sequence
 a3 = vibration acceleration sequence
 ```
+
 The time interval of `a2` is approximately 0.000390625 s, corresponding to a sampling frequency of 2560 Hz.
-Some representative raw vibration files are provided directly in `.mat` format, while others are compressed as `.zip` files due to file-size limitations. Please unzip the `.zip` files before running `Spectrogram_generation.py`. After decompression, the `.mat` files should be placed in the same working directory as the spectrogram generation script or in the directory specified by the user.
+
+Some representative raw vibration files are provided directly in `.mat` format, while others are compressed as `.zip` files due to file-size limitations. Please unzip the `.zip` files before running `Spectrogram_generation.py`.
+
+After decompression, the `.mat` files should be placed in the same working directory as the spectrogram generation script or in the directory specified by the user.
+
 The sample raw vibration files are named as:
+
 ```text
 a_b_c
 ```
+
 where:
+
 ```text
 a = randomly selected sample group index
 b = stratum type
 c = vibration direction
 ```
+
 The vibration direction is defined as:
+
 ```text
 1 = vertical direction
 2 = horizontal direction
 3 = axial direction
 ```
+
 For example:
+
 ```text
 6_1_1.mat
 6_1_2.mat
 6_1_3.mat
 ```
+
 represent one randomly selected group of raw vibration signals from stratum type 1, including vertical, horizontal, and axial directions.
+
 The provided raw vibration samples were anonymized and self-numbered to remove project-identifiable information while preserving the correspondence among sample group, stratum type, and vibration direction.
 
-5. How to Run
-5.1 Install Dependencies
+## 5. How to Run
+
+### 5.1 Install Dependencies
+
 ```bash
 pip install -r requirements.txt
 ```
 
-5.2 Run LOF-Based Data Cleaning
+### 5.2 Run LOF-Based Data Cleaning
 
 ```bash
 python Data_cleaning_LOF.py
 ```
+
 This script performs LOF-based cleaning for tunnelling parameters and outputs cleaned data and comparison figures.
 
-5.3 Generate Spectrogram Images from Sample Raw Vibration Data
+### 5.3 Generate Spectrogram Images from Sample Raw Vibration Data
+
 ```bash
 python Spectrogram_generation.py
 ```
+
 The script reads `.mat` files and generates FFT-based spectrogram images.
+
 Default settings:
+
 ```text
 Sampling frequency = 2560 Hz
 Segment duration = 5 s
 Image size = 224 × 224 pixels
 ```
 
-5.4 Train the Multimodal Model
+### 5.4 Train the Multimodal Model
+
 ```bash
 python Multimodal_model_main_program.py
 ```
+
 This script performs chronological model training and saves the trained models and scaler, including:
+
 ```text
 final_model.pth
 final_scaler.pkl
@@ -171,16 +229,22 @@ logs/best_model_fold_1.pth
 ...
 logs/best_model_fold_8.pth
 ```
-Full model training requires the processed spectrogram image dataset aligned with `tunnelling_parameter_1.xlsx`. The complete processed spectrogram image dataset is available on Zenodo:
+
+Full model training requires the processed spectrogram image dataset aligned with `tunnelling_parameter_1.xlsx`.
+
+The complete processed spectrogram image dataset is available on Zenodo:
+
 ```text
 https://doi.org/10.5281/zenodo.20645879
 ```
+
 The representative `.mat` and `.zip` files in this GitHub repository are mainly used to demonstrate the raw vibration data structure and the spectrogram generation procedure.
 
-5.5 Hyperparameter Settings
+### 5.5 Hyperparameter Settings
+
 To improve reproducibility, the main model architecture, training, preprocessing, and evaluation hyperparameters are summarized below.
 
-#### Model architecture
+#### Model Architecture
 
 The multimodal model consists of one numerical branch and three image branches.
 
@@ -193,17 +257,28 @@ Activation function: ReLU
 Dropout rate: 0.5
 ```
 
-The image modality contains three parallel spectrogram branches corresponding to the vertical, horizontal, and axial vibration directions. The three image branches share the same CNN parameters. Each CNN branch consists of:
+The image modality contains three parallel spectrogram branches corresponding to the vertical, horizontal, and axial vibration directions. The three image branches share the same CNN parameters.
+
+Each CNN branch consists of:
 
 ```text
 Input image: 1 × 224 × 224 grayscale spectrogram
-Convolution layer 1: 1 → 32 channels, kernel size = 3 × 3, padding = 1
-Activation function: ReLU
-Max pooling: 2 × 2
 
-Convolution layer 2: 32 → 64 channels, kernel size = 3 × 3, padding = 1
-Activation function: ReLU
-Max pooling: 2 × 2
+Convolution layer 1:
+Input channels = 1
+Output channels = 32
+Kernel size = 3 × 3
+Padding = 1
+Activation function = ReLU
+Max pooling = 2 × 2
+
+Convolution layer 2:
+Input channels = 32
+Output channels = 64
+Kernel size = 3 × 3
+Padding = 1
+Activation function = ReLU
+Max pooling = 2 × 2
 
 Flatten
 Fully connected layer: 64 × 56 × 56 → 128
@@ -230,7 +305,7 @@ The class labels are:
 2 = TMS: Triple-layer Mixed Stratum
 ```
 
-#### Training hyperparameters
+#### Training Hyperparameters
 
 The main training hyperparameters are:
 
@@ -259,7 +334,7 @@ class_weight = 1 / sqrt(class_count)
 
 The class weights are then normalized so that their sum equals the number of classes.
 
-#### Data loading settings
+#### Data Loading Settings
 
 The data loading settings are:
 
@@ -274,24 +349,28 @@ num_workers = 0
 pin_memory = True for the training loader
 ```
 
-#### Image preprocessing and augmentation
+#### Image Preprocessing and Augmentation
 
 For the training images, light data augmentation is applied:
 
 ```text
 Resize = 224 × 224
+
 RandomAffine:
-    degrees = 3
-    translate = (0.02, 0.02)
-    scale = (0.98, 1.02)
-    fill = 0
+degrees = 3
+translate = (0.02, 0.02)
+scale = (0.98, 1.02)
+fill = 0
+
 ColorJitter:
-    brightness = 0.08
-    contrast = 0.08
+brightness = 0.08
+contrast = 0.08
+
 ToTensor
+
 Normalize:
-    mean = [0.5]
-    std = [0.5]
+mean = [0.5]
+std = [0.5]
 ```
 
 For validation, testing, and importance analysis, deterministic preprocessing is used:
@@ -299,14 +378,17 @@ For validation, testing, and importance analysis, deterministic preprocessing is
 ```text
 Resize = 224 × 224
 ToTensor
+
 Normalize:
-    mean = [0.5]
-    std = [0.5]
+mean = [0.5]
+std = [0.5]
 ```
 
-#### Numerical-feature preprocessing
+#### Numerical-Feature Preprocessing
 
-The numerical features are standardized using `StandardScaler`. To avoid information leakage, the scaler is fitted only on the training subset and then applied to the validation and test subsets.
+The numerical features are standardized using `StandardScaler`.
+
+To avoid information leakage, the scaler is fitted only on the training subset and then applied to the validation and test subsets.
 
 The numerical input features are:
 
@@ -319,7 +401,7 @@ The numerical input features are:
 轴向振动加速度RMS
 ```
 
-#### LOF-based data-cleaning parameters
+#### LOF-Based Data-Cleaning Parameters
 
 For LOF-based tunnelling-parameter cleaning, the parameters are:
 
@@ -328,15 +410,19 @@ n_neighbors = 5
 contamination = 0.02
 ```
 
-Before LOF processing, tunnelling-parameter samples containing zero values are removed. LOF-identified abnormal samples are processed by linear interpolation.
+Before LOF processing, tunnelling-parameter samples containing zero values are removed.
 
-#### Evaluation settings
+LOF-identified abnormal samples are processed by linear interpolation.
+
+#### Evaluation Settings
 
 Two chronologically constrained evaluation settings are used.
 
 For blocked temporal forward-chaining evaluation, samples within each class are kept in their original chronological order and divided into consecutive temporal blocks. Earlier blocks are used for training, the next block is used for validation, and the following block is used for testing.
 
-For final model evaluation, the latest 20% of samples in each class are retained as the independent later-stage test set. The earlier 80% of samples are further divided chronologically into training and validation subsets at a ratio of 9:1. Therefore, the final chronological split is:
+For final model evaluation, the latest 20% of samples in each class are retained as the independent later-stage test set. The earlier 80% of samples are further divided chronologically into training and validation subsets at a ratio of 9:1.
+
+Therefore, the final chronological split is:
 
 ```text
 Training set = 72%
@@ -359,12 +445,16 @@ logs/best_model_fold_1.pth
 logs/best_model_fold_8.pth
 ```
 
-5.6 Run Result Analysis
+### 5.6 Run Result Analysis
+
 After model training is completed, run:
+
 ```bash
 python Result_Analysis.py
 ```
+
 This script loads the saved models and reproduces the main evaluation and analysis results in the manuscript order, including:
+
 ```text
 Blocked temporal forward-chaining evaluation
 Final validation and independent later-stage test evaluation
@@ -372,17 +462,23 @@ Cross-modality ablation analysis
 Directional vibration spectrogram contribution analysis
 Numerical feature sensitivity analysis
 ```
+
 The output files are saved to:
+
 ```text
 results/chapter5_results/
 ```
+
 If the saved fold models are not needed, the fold-evaluation part can be skipped by running:
+
 ```bash
 python Result_Analysis.py --skip-kfold
 ```
 
-6. Reproducibility Workflow
+## 6. Reproducibility Workflow
+
 The main data-processing and model-evaluation workflow is:
+
 ```text
 1. Remove tunnelling-parameter samples containing zero values.
 2. Apply LOF-based outlier detection to the remaining tunnelling parameters.
@@ -397,19 +493,30 @@ The main data-processing and model-evaluation workflow is:
 11. Run the result-analysis script to reproduce the reported evaluation and analysis outputs.
 ```
 
-7. Data Availability
+## 7. Data Availability
+
 The implementation code, processed numerical input data, LOF-cleaned tunnelling-parameter data, representative raw vibration files, and result-analysis scripts are available in this GitHub repository.
+
 The complete processed spectrogram image dataset used as the image-modality input of the multimodal model is available on Zenodo:
+
 ```text
 https://doi.org/10.5281/zenodo.20645879
 ```
+
 The processed spectrogram image dataset is deposited on Zenodo because of its large file size. Zenodo is used as the long-term public data repository for the large-size processed image dataset.
-Representative anonymized raw vibration files are provided in this GitHub repository to demonstrate the data structure and the spectrogram generation workflow. The anonymized numbering rule preserves the correspondence among the randomly selected sample group, stratum type, and vibration direction, while excluding project-identifiable information such as exact project location, exact chainage, original ring numbers, and detailed construction logs.
+
+Representative anonymized raw vibration files are provided in this GitHub repository to demonstrate the data structure and the spectrogram generation workflow.
+
+The anonymized numbering rule preserves the correspondence among the randomly selected sample group, stratum type, and vibration direction, while excluding project-identifiable information such as exact project location, exact chainage, original ring numbers, and detailed construction logs.
+
 The released files are provided for academic research and reproducibility purposes.
 
-8. Citation
+## 8. Citation
+
 If you use this repository, the provided code, or the dataset, please cite the corresponding manuscript and the Zenodo dataset.
+
 Processed spectrogram image dataset:
+
 ```text
 https://doi.org/10.5281/zenodo.20645879
 ```

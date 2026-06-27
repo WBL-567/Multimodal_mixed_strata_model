@@ -165,7 +165,190 @@ Full model training requires the processed spectrogram image dataset aligned wit
 https://doi.org/10.5281/zenodo.20645879
 ```
 The representative `.mat` and `.zip` files in this GitHub repository are mainly used to demonstrate the raw vibration data structure and the spectrogram generation procedure.
-5.5 Run Result Analysis
+### 5.5 Hyperparameter Settings
+
+To improve reproducibility, the main model architecture, training, preprocessing, and evaluation hyperparameters are summarized below.
+
+#### Model architecture
+
+The multimodal model consists of one numerical branch and three image branches.
+
+The numerical branch is a single-hidden-layer MLP:
+
+```text
+Input numerical features: 6
+Hidden dimension: 128
+Activation function: ReLU
+Dropout rate: 0.5
+```
+
+The image modality contains three parallel spectrogram branches corresponding to the vertical, horizontal, and axial vibration directions. The three image branches share the same CNN parameters. Each CNN branch consists of:
+
+```text
+Input image: 1 × 224 × 224 grayscale spectrogram
+Convolution layer 1: 1 → 32 channels, kernel size = 3 × 3, padding = 1
+Activation function: ReLU
+Max pooling: 2 × 2
+
+Convolution layer 2: 32 → 64 channels, kernel size = 3 × 3, padding = 1
+Activation function: ReLU
+Max pooling: 2 × 2
+
+Flatten
+Fully connected layer: 64 × 56 × 56 → 128
+Activation function: ReLU
+Dropout rate: 0.5
+```
+
+The 128-dimensional numerical feature and the three 128-dimensional image features are concatenated to form a 512-dimensional fusion feature:
+
+```text
+Fusion feature dimension: 128 × 4 = 512
+Fusion fully connected layer: 512 → 512
+Activation function: ReLU
+Dropout rate: 0.5
+Classification layer: 512 → 3
+Number of classes: 3
+```
+
+The class labels are:
+
+```text
+0 = HSS: Homogeneous Stratum
+1 = DMS: Dual-layer Mixed Stratum
+2 = TMS: Triple-layer Mixed Stratum
+```
+
+#### Training hyperparameters
+
+The main training hyperparameters are:
+
+```text
+Random seed = 42
+Batch size = 32
+Maximum epochs = 100
+Optimizer = AdamW
+Learning rate = 1e-4
+Weight decay = 1e-4
+Loss function = class-weighted CrossEntropyLoss
+Gradient clipping norm = 3.0
+Early stopping patience = 12
+Minimum validation-loss improvement for early stopping = 0.001
+Learning-rate scheduler = ReduceLROnPlateau
+Scheduler mode = min
+Scheduler patience = 4
+Scheduler factor = 0.5
+```
+
+Class weights in the cross-entropy loss are calculated from the class distribution of the training subset:
+
+```text
+class_weight = 1 / sqrt(class_count)
+```
+
+The class weights are then normalized so that their sum equals the number of classes.
+
+#### Data loading settings
+
+The data loading settings are:
+
+```text
+Training batch size = 32
+Validation batch size = 32
+Test batch size = 32
+Training shuffle = True
+Validation shuffle = False
+Test shuffle = False
+num_workers = 0
+pin_memory = True for the training loader
+```
+
+#### Image preprocessing and augmentation
+
+For the training images, light data augmentation is applied:
+
+```text
+Resize = 224 × 224
+RandomAffine:
+    degrees = 3
+    translate = (0.02, 0.02)
+    scale = (0.98, 1.02)
+    fill = 0
+ColorJitter:
+    brightness = 0.08
+    contrast = 0.08
+ToTensor
+Normalize:
+    mean = [0.5]
+    std = [0.5]
+```
+
+For validation, testing, and importance analysis, deterministic preprocessing is used:
+
+```text
+Resize = 224 × 224
+ToTensor
+Normalize:
+    mean = [0.5]
+    std = [0.5]
+```
+
+#### Numerical-feature preprocessing
+
+The numerical features are standardized using `StandardScaler`. To avoid information leakage, the scaler is fitted only on the training subset and then applied to the validation and test subsets.
+
+The numerical input features are:
+
+```text
+推进速度
+扭矩
+推力
+竖向振动加速度RMS
+横向振动加速度RMS
+轴向振动加速度RMS
+```
+
+#### LOF-based data-cleaning parameters
+
+For LOF-based tunnelling-parameter cleaning, the parameters are:
+
+```text
+n_neighbors = 5
+contamination = 0.02
+```
+
+Before LOF processing, tunnelling-parameter samples containing zero values are removed. LOF-identified abnormal samples are processed by linear interpolation.
+
+#### Evaluation settings
+
+Two chronologically constrained evaluation settings are used.
+
+For blocked temporal forward-chaining evaluation, samples within each class are kept in their original chronological order and divided into consecutive temporal blocks. Earlier blocks are used for training, the next block is used for validation, and the following block is used for testing.
+
+For final model evaluation, the latest 20% of samples in each class are retained as the independent later-stage test set. The earlier 80% of samples are further divided chronologically into training and validation subsets at a ratio of 9:1. Therefore, the final chronological split is:
+
+```text
+Training set = 72%
+Validation set = 8%
+Independent test set = 20%
+```
+
+The final trained model and scaler are saved as:
+
+```text
+final_model.pth
+final_scaler.pkl
+```
+
+The fold models are saved in:
+
+```text
+logs/best_model_fold_1.pth
+...
+logs/best_model_fold_8.pth
+```
+
+5.6Run Result Analysis
 After model training is completed, run:
 ```bash
 python Result_Analysis.py

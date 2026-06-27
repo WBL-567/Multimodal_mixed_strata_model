@@ -242,59 +242,21 @@ The representative `.mat` and `.zip` files in this GitHub repository are mainly 
 
 ### 5.5 Hyperparameter Settings
 
-To improve reproducibility, the main model architecture, training, preprocessing, and evaluation hyperparameters are summarized below.
+To improve reproducibility, the main implementation, training, preprocessing, and evaluation hyperparameters are summarized below.
 
-#### Model Architecture
+#### Model Configuration
 
-The multimodal model consists of one numerical branch and three image branches.
-
-The numerical branch is a single-hidden-layer MLP:
+The multimodal model consists of one numerical branch and three image branches. The numerical branch uses a single-hidden-layer MLP to encode the numerical features. The image branch uses CNNs to extract spatial features from vertical, horizontal, and axial vibration spectrograms. The extracted numerical and image features are concatenated for final stratum classification.
 
 ```text
-Input numerical features: 6
-Hidden dimension: 128
-Activation function: ReLU
-Dropout rate: 0.5
-```
-
-The image modality contains three parallel spectrogram branches corresponding to the vertical, horizontal, and axial vibration directions. The three image branches share the same CNN parameters.
-
-Each CNN branch consists of:
-
-```text
-Input image: 1 × 224 × 224 grayscale spectrogram
-
-Convolution layer 1:
-Input channels = 1
-Output channels = 32
-Kernel size = 3 × 3
-Padding = 1
+Numerical input features = 6
+Numerical feature dimension = 128
+Image input size = 1 × 224 × 224
+Image feature dimension per spectrogram branch = 128
+Fusion feature dimension = 512
+Number of classes = 3
+Dropout rate = 0.5
 Activation function = ReLU
-Max pooling = 2 × 2
-
-Convolution layer 2:
-Input channels = 32
-Output channels = 64
-Kernel size = 3 × 3
-Padding = 1
-Activation function = ReLU
-Max pooling = 2 × 2
-
-Flatten
-Fully connected layer: 64 × 56 × 56 → 128
-Activation function: ReLU
-Dropout rate: 0.5
-```
-
-The 128-dimensional numerical feature and the three 128-dimensional image features are concatenated to form a 512-dimensional fusion feature:
-
-```text
-Fusion feature dimension: 128 × 4 = 512
-Fusion fully connected layer: 512 → 512
-Activation function: ReLU
-Dropout rate: 0.5
-Classification layer: 512 → 3
-Number of classes: 3
 ```
 
 The class labels are:
@@ -307,8 +269,6 @@ The class labels are:
 
 #### Training Hyperparameters
 
-The main training hyperparameters are:
-
 ```text
 Random seed = 42
 Batch size = 32
@@ -319,9 +279,8 @@ Weight decay = 1e-4
 Loss function = class-weighted CrossEntropyLoss
 Gradient clipping norm = 3.0
 Early stopping patience = 12
-Minimum validation-loss improvement for early stopping = 0.001
+Minimum validation-loss improvement = 0.001
 Learning-rate scheduler = ReduceLROnPlateau
-Scheduler mode = min
 Scheduler patience = 4
 Scheduler factor = 0.5
 ```
@@ -336,8 +295,6 @@ The class weights are then normalized so that their sum equals the number of cla
 
 #### Data Loading Settings
 
-The data loading settings are:
-
 ```text
 Training batch size = 32
 Validation batch size = 32
@@ -346,49 +303,34 @@ Training shuffle = True
 Validation shuffle = False
 Test shuffle = False
 num_workers = 0
-pin_memory = True for the training loader
 ```
 
 #### Image Preprocessing and Augmentation
 
-For the training images, light data augmentation is applied:
+For training images, light data augmentation is applied:
 
 ```text
 Resize = 224 × 224
-
-RandomAffine:
-degrees = 3
-translate = (0.02, 0.02)
-scale = (0.98, 1.02)
-fill = 0
-
-ColorJitter:
-brightness = 0.08
-contrast = 0.08
-
-ToTensor
-
-Normalize:
-mean = [0.5]
-std = [0.5]
+RandomAffine degrees = 3
+RandomAffine translate = (0.02, 0.02)
+RandomAffine scale = (0.98, 1.02)
+ColorJitter brightness = 0.08
+ColorJitter contrast = 0.08
+Normalize mean = [0.5]
+Normalize std = [0.5]
 ```
 
 For validation, testing, and importance analysis, deterministic preprocessing is used:
 
 ```text
 Resize = 224 × 224
-ToTensor
-
-Normalize:
-mean = [0.5]
-std = [0.5]
+Normalize mean = [0.5]
+Normalize std = [0.5]
 ```
 
 #### Numerical-Feature Preprocessing
 
-The numerical features are standardized using `StandardScaler`.
-
-To avoid information leakage, the scaler is fitted only on the training subset and then applied to the validation and test subsets.
+The numerical features are standardized using `StandardScaler`. To avoid information leakage, the scaler is fitted only on the training subset and then applied to the validation and test subsets.
 
 The numerical input features are:
 
@@ -403,26 +345,16 @@ The numerical input features are:
 
 #### LOF-Based Data-Cleaning Parameters
 
-For LOF-based tunnelling-parameter cleaning, the parameters are:
-
 ```text
 n_neighbors = 5
 contamination = 0.02
 ```
 
-Before LOF processing, tunnelling-parameter samples containing zero values are removed.
-
-LOF-identified abnormal samples are processed by linear interpolation.
+Before LOF processing, tunnelling-parameter samples containing zero values are removed. LOF-identified abnormal samples are processed by linear interpolation.
 
 #### Evaluation Settings
 
-Two chronologically constrained evaluation settings are used.
-
-For blocked temporal forward-chaining evaluation, samples within each class are kept in their original chronological order and divided into consecutive temporal blocks. Earlier blocks are used for training, the next block is used for validation, and the following block is used for testing.
-
 For final model evaluation, the latest 20% of samples in each class are retained as the independent later-stage test set. The earlier 80% of samples are further divided chronologically into training and validation subsets at a ratio of 9:1.
-
-Therefore, the final chronological split is:
 
 ```text
 Training set = 72%
